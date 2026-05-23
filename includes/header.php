@@ -122,20 +122,17 @@ $faviconVersion = file_exists($faviconFile) ? filemtime($faviconFile) : time();
                         <i data-lucide="x" aria-hidden="true"></i>
                     </button>
                 </div>
-                <form class="form-panel auth-panel account-modal-form password-reset-form" method="post" action="includes/password_reset_api.php" data-password-reset-form>
+                <form class="form-panel auth-panel account-modal-form password-reset-form" method="post" action="#" data-password-reset-form>
                     <div data-password-reset-step="otp">
                         <div class="form-grid single-column">
                             <label>Enter Email<input type="email" name="email" placeholder="Enter your gmail" autocomplete="email" required></label>
-                            <label class="password-reset-field">OTP Code
-                                <span class="password-reset-input-action">
-                                    <input type="text" name="otp" inputmode="numeric" maxlength="6" placeholder="Enter OTP Code" autocomplete="one-time-code">
-                                    <button class="ghost-button" type="button" data-password-reset-send-otp>Get OTP</button>
-                                </span>
-                            </label>
+                            <div class="form-actions">
+                                <button class="ghost-button" type="button" data-password-reset-send-otp><i data-lucide="mail" aria-hidden="true"></i> Send Reset Link</button>
+                            </div>
                         </div>
                         <div class="password-reset-status" data-password-reset-otp-status hidden>
                             <span class="password-reset-status-icon"><i data-lucide="check" aria-hidden="true"></i></span>
-                            <span>OTP sent to Gmail</span>
+                            <span>Password reset email sent to Gmail</span>
                         </div>
                     </div>
 
@@ -151,7 +148,7 @@ $faviconVersion = file_exists($faviconFile) ? filemtime($faviconFile) : time();
 
                     <div class="password-reset-success" data-password-reset-step="success" hidden>
                         <span class="password-reset-success-icon"><i data-lucide="check" aria-hidden="true"></i></span>
-                        <h3>Password changed successfully</h3>
+                        <h3 data-password-reset-success-title>Password reset email sent</h3><p>Open the email from Firebase and follow the link to create a new password.</p>
                         <button class="primary-button" type="button" data-password-reset-back><i data-lucide="log-in" aria-hidden="true"></i> Back to Sign In</button>
                     </div>
                     <div class="notice" data-password-reset-notice></div>
@@ -248,6 +245,7 @@ $faviconVersion = file_exists($faviconFile) ? filemtime($faviconFile) : time();
                             <button class="ghost-button" type="button" data-location-picker-open><i data-lucide="map-pin" aria-hidden="true"></i> Choose Location</button>
                             <input type="hidden" name="addressParts" data-address-parts>
                         </div>
+                        <!-- TODO: Upload this file with Firebase Storage in a later phase; Phase 1 saves validIdUrl/licenseUrl as empty strings. -->
                         <label>Valid ID / Driver's License<input type="file" name="validId" accept="image/*" data-image-upload required><small class="field-help">Upload an image file.</small></label>
                     </div>
                     <div class="form-actions">
@@ -302,6 +300,7 @@ $faviconVersion = file_exists($faviconFile) ? filemtime($faviconFile) : time();
                         </div>
                         <label>Opening Time<input type="time" name="businessOpenTime" value="08:00" required></label>
                         <label>Closing Time<input type="time" name="businessCloseTime" value="21:00" required></label>
+                        <!-- TODO: Upload this file with Firebase Storage in a later phase; Phase 1 saves logoUrl/documentUrl as empty strings. -->
                         <label>Business Permit / Proof of Merchant<input type="file" name="businessProof" accept="image/*" data-image-upload required><small class="field-help">Upload an image file.</small></label>
                     </div>
                     <div class="form-actions">

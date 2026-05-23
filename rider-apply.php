@@ -48,6 +48,7 @@ require __DIR__ . '/includes/header.php';
                             <button class="ghost-button" type="button" data-location-picker-open><i data-lucide="map-pin" aria-hidden="true"></i> Choose Location</button>
                             <input type="hidden" name="addressParts" data-address-parts>
                         </div>
+                        <!-- TODO: Upload this file with Firebase Storage in a later phase; Phase 1 saves validIdUrl/licenseUrl as empty strings. -->
                         <label>Valid ID / Driver's License<input type="file" name="validId" accept="image/*" data-image-upload required><small class="field-help">Upload an image file.</small></label>
                     </div>
                     <div class="form-actions">

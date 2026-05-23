@@ -63,6 +63,7 @@ require __DIR__ . '/includes/header.php';
                                 <input type="text" name="category" placeholder="Category" required>
                                 <input type="text" name="unit" placeholder="Unit, e.g. 1 kg" required>
                                 <input type="number" min="1" step="0.01" name="price" placeholder="Price" required>
+                                <!-- TODO: Upload product images with Firebase Storage in a later phase; Phase 2 stores imageUrl as a plain string. -->
                                 <label>Product Image (optional)<input type="file" name="productImage" accept="image/*" data-image-upload><small class="field-help">JPG, PNG, GIF, or WebP up to 5 MB.</small></label>
                                 <textarea name="description" placeholder="About the product (optional)"></textarea>
                                 <button class="primary-button" type="submit"><i data-lucide="plus" aria-hidden="true"></i> Save product</button>
@@ -120,6 +121,7 @@ require __DIR__ . '/includes/header.php';
                                     <input type="number" min="1" step="0.01" data-product-field="price" placeholder="Price" required>
                                 </label>
                                 <label>Product Photo
+                                    <!-- TODO: Upload product images with Firebase Storage in a later phase; Phase 2 stores imageUrl as a plain string. -->
                                     <input type="file" name="productImage" accept="image/*" data-product-field="image" data-seller-inline-product-image-upload data-image-upload>
                                     <small class="field-help" data-seller-product-image-help>Leave blank to keep the current product photo. JPG, PNG, GIF, or WebP up to 5 MB.</small>
                                 </label>
@@ -131,6 +133,7 @@ require __DIR__ . '/includes/header.php';
                                 </label>
                                 <div class="form-actions">
                                     <button class="primary-button" type="submit"><i data-lucide="save" aria-hidden="true"></i> Save changes</button>
+                                    <button class="ghost-button" type="button" data-seller-product-delete><i data-lucide="trash-2" aria-hidden="true"></i> Delete product</button>
                                     <button class="ghost-button" type="button" data-seller-product-editor-back><i data-lucide="arrow-left" aria-hidden="true"></i> Back</button>
                                 </div>
                                 <div class="notice" data-seller-inline-product-notice></div>

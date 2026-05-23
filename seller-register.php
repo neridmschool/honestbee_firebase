@@ -51,6 +51,7 @@ require __DIR__ . '/includes/header.php';
                         </div>
                         <label>Opening Time<input type="time" name="businessOpenTime" value="08:00" required></label>
                         <label>Closing Time<input type="time" name="businessCloseTime" value="21:00" required></label>
+                        <!-- TODO: Upload this file with Firebase Storage in a later phase; Phase 1 saves logoUrl/documentUrl as empty strings. -->
                         <label>Business Permit / Proof of Merchant<input type="file" name="businessProof" accept="image/*" data-image-upload required><small class="field-help">Upload an image file.</small></label>
                     </div>
                     <div class="form-actions">

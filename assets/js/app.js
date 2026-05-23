@@ -14,12 +14,32 @@ import {
     setDoc,
     updateDoc,
     where
-} from './mysql.js';
-import { db, collections } from './mysql.js';
+} from './firestore-compat.js';
+import { db, collections } from './firestore-compat.js';
+import {
+    createUserWithEmailAndPassword,
+    firebaseAuth,
+    firebaseCollection,
+    firebaseDeleteDoc,
+    firebaseDoc,
+    firebaseGetDoc,
+    firebaseGetDocs,
+    firebaseLimit,
+    firebaseOnSnapshot,
+    firebaseQuery,
+    firebaseServerTimestamp,
+    firebaseSetDoc,
+    firebaseWhere,
+    firestoreDb,
+    onAuthStateChanged,
+    sendPasswordResetEmail,
+    signInWithEmailAndPassword,
+    signOut
+} from './firebase-config.js';
 
-const UPLOAD_URL = 'includes/upload_api.php';
-const PASSWORD_RESET_URL = 'includes/password_reset_api.php';
 const DATA = window.honestbeeData || {};
+// Phase 6: Customer cart, orders, rider delivery, admin account approvals, ratings, and refunds now use Firestore.
+// TODO: Add Firebase Storage for image/file uploads later; imageUrl/fileUrl fields stay plain strings for now.
 const DEFAULT_PRODUCT_IMAGE = 'assets/img/offline/default product logo.png';
 const storeCatalogs = DATA.storeCatalogs || {};
 const builtInStoreIds = new Set(Object.keys(storeCatalogs));
@@ -49,11 +69,11 @@ const storageKeys = {
     adminPassword: 'honestbee_admin_password'
 };
 
-const mysqlStorageVersion = 'mysql-v1';
+const firebaseStorageVersion = 'firebase-v2';
 
-function clearLegacyClientDataForMysql() {
+function clearLegacyClientDataForFirebase() {
     try {
-        if (localStorage.getItem('honestbee_storage_schema_version') === mysqlStorageVersion) {
+        if (localStorage.getItem('honestbee_storage_schema_version') === firebaseStorageVersion) {
             return;
         }
 
@@ -80,13 +100,13 @@ function clearLegacyClientDataForMysql() {
             'account-role-rider',
             'account-role-admin'
         );
-        localStorage.setItem('honestbee_storage_schema_version', mysqlStorageVersion);
+        localStorage.setItem('honestbee_storage_schema_version', firebaseStorageVersion);
     } catch (error) {
         // Browsers can disable local storage.
     }
 }
 
-clearLegacyClientDataForMysql();
+clearLegacyClientDataForFirebase();
 
 const adminAccount = {
     USER_id: 'admin-honestbee-dm',
@@ -374,8 +394,460 @@ function roleLower(value) {
 const deletedAccountMessage = 'Your account has been deleted.';
 const pendingApprovalMessage = 'Pending for approval.';
 
+function normalizedAccountRole(value) {
+    const role = roleLower(value);
+    return role === 'merchant' ? 'seller' : role;
+}
+
 function accountRole(account) {
-    return roleLower(account?.USER_role);
+    return normalizedAccountRole(account?.USER_role || account?.role);
+}
+
+function titleStatus(value, fallback = 'Pending') {
+    const normalized = roleLower(value || fallback);
+    if (normalized === 'active') {
+        return 'Active';
+    }
+    if (normalized === 'approved') {
+        return 'Approved';
+    }
+    if (normalized === 'inactive') {
+        return 'Inactive';
+    }
+    if (normalized === 'rejected') {
+        return 'Rejected';
+    }
+    if (normalized === 'deleted') {
+        return 'Deleted';
+    }
+    return fallback;
+}
+
+function normalizeApprovalStatus(value, approved = 'Approved', rejected = 'Rejected', pending = 'Pending') {
+    const status = roleLower(value);
+    if (['approved', 'active', 'accepted', 'enabled'].includes(status)) {
+        return approved;
+    }
+    if (['rejected', 'inactive', 'declined', 'denied', 'disabled'].includes(status)) {
+        return rejected;
+    }
+    return pending;
+}
+
+function recordApprovalStatus(primary, fallback, approved = 'Approved', rejected = 'Rejected', pending = 'Pending') {
+    return roleLower(primary)
+        ? normalizeApprovalStatus(primary, approved, rejected, pending)
+        : normalizeApprovalStatus(fallback, approved, rejected, pending);
+}
+
+function firebaseUserDoc(uid) {
+    return firebaseDoc(firestoreDb, 'users', uid);
+}
+
+function firebaseRoleDoc(role, uid) {
+    if (role === 'seller') {
+        return firebaseDoc(firestoreDb, 'merchants', uid);
+    }
+    if (role === 'rider') {
+        return firebaseDoc(firestoreDb, 'riders', uid);
+    }
+    return firebaseDoc(firestoreDb, 'customers', uid);
+}
+
+function firebaseMerchantRecord(uid, merchant = {}, user = {}, account = getCurrentAccount()) {
+    const ownerName = user.username || storedAccountName(account) || '';
+    const ownerParts = splitFullName(ownerName);
+    const approvalStatus = recordApprovalStatus(merchant.approvalStatus, user.status, 'Approved', 'Rejected', 'Pending');
+    const storeStatus = merchant.storeStatus || (approvalStatus === 'Approved' ? 'Open' : 'Closed');
+
+    return {
+        id: uid,
+        MERCH_id: uid,
+        MERCH_ownerFirstName: account?.MERCH_ownerFirstName || ownerParts.firstName || '',
+        MERCH_ownerLastName: account?.MERCH_ownerLastName || ownerParts.lastName || '',
+        MERCH_ownerEmail: user.email || accountEmail(account),
+        MERCH_phone: account?.MERCH_phone || '',
+        MERCH_name: merchant.storeName || account?.MERCH_name || 'Merchant',
+        MERCH_type: merchant.merchantType || account?.MERCH_type || 'Grocery',
+        MERCH_address: merchant.address || account?.MERCH_address || '',
+        MERCH_availableDays: merchant.availableDays || account?.MERCH_availableDays || 'Monday, Tuesday, Wednesday, Thursday, Friday, Saturday',
+        MERCH_storeStatus: normalizeMerchantStoreStatus(storeStatus),
+        MERCH_approvalStatus: approvalStatus,
+        logoUrl: merchant.logoUrl || '',
+        documentUrl: merchant.documentUrl || '',
+        role: 'seller'
+    };
+}
+
+function firebaseRiderRecord(uid, rider = {}, user = {}, account = getCurrentAccount()) {
+    const fullName = rider.fullName || user.username || storedAccountName(account) || 'Rider';
+    const parts = splitFullName(fullName);
+    const employmentStatus = recordApprovalStatus(rider.approvalStatus, user.status, 'Active', 'Inactive', 'Pending');
+
+    return {
+        id: uid,
+        SHOP_id: uid,
+        RIDER_id: uid,
+        SHOP_firstName: account?.SHOP_firstName || parts.firstName || '',
+        SHOP_lastName: account?.SHOP_lastName || parts.lastName || '',
+        SHOP_email: user.email || accountEmail(account),
+        SHOP_phone: account?.SHOP_phone || '',
+        SHOP_currentLocation: rider.currentLocation || account?.SHOP_currentLocation || '',
+        SHOP_vehicleType: rider.vehicleType || account?.SHOP_vehicleType || '',
+        SHOP_maxActiveOrders: account?.SHOP_maxActiveOrders || 1,
+        SHOP_availabilityStatus: employmentStatus === 'Active' ? 'Available' : 'Unavailable',
+        SHOP_employmentStatus: employmentStatus,
+        SHOP_approvalStatus: rider.approvalStatus || user.status || 'pending',
+        profileImageUrl: rider.profileImageUrl || '',
+        validIdUrl: rider.validIdUrl || '',
+        licenseUrl: rider.licenseUrl || '',
+        role: 'rider'
+    };
+}
+
+
+function adminUserRecordRole(user = {}) {
+    return normalizedAccountRole(user.USER_role || user.role || '');
+}
+
+function firestoreAdminTimestamp(record = {}) {
+    return record.updatedAt || record.createdAt || record.created_at || null;
+}
+
+function adminSortByDateThenName(records = [], nameSelector = (record) => record.id) {
+    return [...records].sort((first, second) => {
+        const firstTime = firestoreDateValue(firestoreAdminTimestamp(first));
+        const secondTime = firestoreDateValue(firestoreAdminTimestamp(second));
+        if (secondTime !== firstTime) {
+            return secondTime - firstTime;
+        }
+        return String(nameSelector(first) || '').localeCompare(String(nameSelector(second) || ''));
+    });
+}
+
+function normalizeFirestoreAdminCustomer(uid, customer = {}, user = {}) {
+    const displayName = user.username || fullNameFromParts(customer.firstName, customer.lastName) || titleCaseName(String(user.email || '').split('@')[0]);
+    const parts = splitFullName(displayName);
+    const address = cleanAddressPart(customer.address || customer.CUST_address || '');
+
+    return {
+        id: uid,
+        USER_id: uid,
+        USER_linkedId: uid,
+        USER_role: 'customer',
+        role: 'customer',
+        USER_email: user.email || customer.email || '',
+        USER_displayName: displayName || 'Customer',
+        USER_firstName: customer.firstName || customer.CUST_firstName || parts.firstName || '',
+        USER_lastName: customer.lastName || customer.CUST_lastName || parts.lastName || '',
+        USER_phone: customer.phone || customer.CUST_phone || '',
+        USER_address: address,
+        USER_city: normalizeServiceCity(customer.city || customer.CUST_city) || deriveServiceCityFromAddress(address) || '',
+        USER_preferredDeliveryTime: customer.preferredDeliveryTime || customer.CUST_preferredDeliveryTime || '',
+        USER_status: titleStatus(user.status, 'Active'),
+        profileImageUrl: customer.profileImageUrl || '',
+        createdAt: customer.createdAt || user.createdAt || null,
+        updatedAt: customer.updatedAt || user.updatedAt || null
+    };
+}
+
+function normalizeFirestoreAdminMerchant(uid, merchant = {}, user = {}) {
+    const normalizedMerchant = firebaseMerchantRecord(uid, merchant, user, {
+        MERCH_ownerFirstName: merchant.ownerFirstName || '',
+        MERCH_ownerLastName: merchant.ownerLastName || '',
+        MERCH_ownerEmail: user.email || merchant.ownerEmail || '',
+        MERCH_phone: merchant.phone || '',
+        MERCH_name: merchant.storeName || merchant.MERCH_name || '',
+        MERCH_type: merchant.merchantType || merchant.MERCH_type || '',
+        MERCH_address: merchant.address || merchant.MERCH_address || '',
+        MERCH_availableDays: merchant.availableDays || merchant.MERCH_availableDays || '',
+        MERCH_storeStatus: merchant.storeStatus || merchant.MERCH_storeStatus || '',
+        MERCH_approvalStatus: merchant.approvalStatus || merchant.MERCH_approvalStatus || user.status || 'pending'
+    });
+
+    return {
+        ...normalizedMerchant,
+        id: uid,
+        role: 'seller',
+        MERCH_id: uid,
+        MERCH_ownerEmail: user.email || merchant.ownerEmail || normalizedMerchant.MERCH_ownerEmail || '',
+        MERCH_phone: merchant.phone || merchant.MERCH_phone || normalizedMerchant.MERCH_phone || '',
+        MERCH_businessProof: merchant.documentUrl || merchant.businessProof || merchant.MERCH_businessProof || '',
+        MERCH_businessPermit: merchant.documentUrl || merchant.businessPermit || merchant.MERCH_businessPermit || '',
+        documentUrl: merchant.documentUrl || '',
+        logoUrl: merchant.logoUrl || '',
+        USER_status: titleStatus(user.status, normalizedMerchant.MERCH_approvalStatus),
+        createdAt: merchant.createdAt || user.createdAt || null,
+        updatedAt: merchant.updatedAt || user.updatedAt || null
+    };
+}
+
+function normalizeFirestoreAdminRider(uid, rider = {}, user = {}) {
+    const normalizedRider = firebaseRiderRecord(uid, rider, user, {
+        SHOP_phone: rider.phone || '',
+        SHOP_currentLocation: rider.currentLocation || '',
+        SHOP_vehicleType: rider.vehicleType || '',
+        SHOP_employmentStatus: rider.approvalStatus || user.status || 'pending'
+    });
+
+    return {
+        ...normalizedRider,
+        id: uid,
+        role: 'rider',
+        SHOP_id: uid,
+        RIDER_id: uid,
+        SHOP_email: user.email || rider.email || normalizedRider.SHOP_email || '',
+        SHOP_phone: rider.phone || rider.SHOP_phone || normalizedRider.SHOP_phone || '',
+        SHOP_validId: rider.validIdUrl || rider.validId || rider.SHOP_validId || '',
+        RIDER_validId: rider.validIdUrl || rider.validId || rider.RIDER_validId || '',
+        SHOP_license: rider.licenseUrl || rider.license || rider.SHOP_license || '',
+        RIDER_license: rider.licenseUrl || rider.license || rider.RIDER_license || '',
+        validIdUrl: rider.validIdUrl || '',
+        licenseUrl: rider.licenseUrl || '',
+        USER_status: titleStatus(user.status, normalizedRider.SHOP_employmentStatus),
+        createdAt: rider.createdAt || user.createdAt || null,
+        updatedAt: rider.updatedAt || user.updatedAt || null
+    };
+}
+
+function combineFirestoreAdminAccounts(users = [], customers = [], merchants = [], riders = []) {
+    const usersById = new Map(users.map((user) => [user.id, user]));
+    const customersById = new Map(customers.map((customer) => [customer.id, customer]));
+    const merchantsById = new Map(merchants.map((merchant) => [merchant.id, merchant]));
+    const ridersById = new Map(riders.map((rider) => [rider.id, rider]));
+
+    const customerIds = new Set([
+        ...customersById.keys(),
+        ...users.filter((user) => adminUserRecordRole(user) === 'customer').map((user) => user.id)
+    ]);
+    const merchantIds = new Set([
+        ...merchantsById.keys(),
+        ...users.filter((user) => adminUserRecordRole(user) === 'seller').map((user) => user.id)
+    ]);
+    const riderIds = new Set([
+        ...ridersById.keys(),
+        ...users.filter((user) => adminUserRecordRole(user) === 'rider').map((user) => user.id)
+    ]);
+
+    return {
+        customers: adminSortByDateThenName([...customerIds]
+            .map((uid) => normalizeFirestoreAdminCustomer(uid, customersById.get(uid) || {}, usersById.get(uid) || {}))
+            .filter((record) => !isDeletedAccountRecord(record)), userFullName),
+        sellers: adminSortByDateThenName([...merchantIds]
+            .map((uid) => normalizeFirestoreAdminMerchant(uid, merchantsById.get(uid) || {}, usersById.get(uid) || {}))
+            .filter((record) => !isDeletedAccountRecord(record)), (record) => record.MERCH_name),
+        riders: adminSortByDateThenName([...riderIds]
+            .map((uid) => normalizeFirestoreAdminRider(uid, ridersById.get(uid) || {}, usersById.get(uid) || {}))
+            .filter((record) => !isDeletedAccountRecord(record)), riderFullName)
+    };
+}
+
+function listenFirestoreCollectionRecords(name, render) {
+    return firebaseOnSnapshot(
+        firestoreCollectionRef(name),
+        (snapshot) => render(firestoreSnapshotRecords(snapshot)),
+        (error) => {
+            console.error(`Firestore listener failed for ${name}`, error);
+            render([], error);
+        }
+    );
+}
+
+function buildAccountFromFirebaseRecords(uid, email, user = {}, roleData = {}) {
+    const role = normalizedAccountRole(user.role);
+    const userEmail = email || user.email || '';
+    const username = user.username || titleCaseName(userEmail.split('@')[0]);
+
+    if (role === 'admin') {
+        return {
+            USER_id: uid,
+            USER_role: 'admin',
+            USER_email: userEmail,
+            USER_linkedId: uid,
+            USER_displayName: username || 'Admin',
+            USER_status: titleStatus(user.status, 'Active')
+        };
+    }
+
+    if (role === 'seller') {
+        const merchant = firebaseMerchantRecord(uid, roleData, user);
+        return {
+            USER_id: uid,
+            USER_role: 'seller',
+            USER_email: userEmail,
+            USER_linkedId: uid,
+            USER_displayName: username || merchant.MERCH_name,
+            USER_status: titleStatus(user.status, merchant.MERCH_approvalStatus),
+            ...merchant
+        };
+    }
+
+    if (role === 'rider') {
+        const rider = firebaseRiderRecord(uid, roleData, user);
+        return {
+            USER_id: uid,
+            USER_role: 'rider',
+            USER_email: userEmail,
+            USER_linkedId: uid,
+            USER_displayName: username || riderFullName(rider),
+            USER_status: titleStatus(user.status, rider.SHOP_employmentStatus),
+            ...rider
+        };
+    }
+
+    const firstName = roleData.firstName || '';
+    const lastName = roleData.lastName || '';
+    const address = cleanAddressPart(roleData.address || '');
+    return {
+        USER_id: uid,
+        USER_role: 'customer',
+        USER_email: userEmail,
+        USER_linkedId: uid,
+        USER_displayName: fullNameFromParts(firstName, lastName) || username || 'Customer',
+        USER_firstName: firstName,
+        USER_lastName: lastName,
+        USER_phone: roleData.phone || '',
+        USER_city: deriveServiceCityFromAddress(address) || '',
+        USER_address: address,
+        USER_status: titleStatus(user.status, 'Active'),
+        profileImageUrl: roleData.profileImageUrl || ''
+    };
+}
+
+async function accountFromFirebaseUser(firebaseUser, options = {}) {
+    if (!firebaseUser?.uid) {
+        return null;
+    }
+
+    let userSnapshot = await firebaseGetDoc(firebaseUserDoc(firebaseUser.uid));
+    let user = userSnapshot.exists() ? userSnapshot.data() : null;
+
+    if (!user && firebaseUser.email === adminAccount.USER_email && options.allowAdminBootstrap) {
+        user = {
+            email: firebaseUser.email,
+            username: 'Admin',
+            role: 'admin',
+            status: 'active',
+            createdAt: firebaseServerTimestamp()
+        };
+        await firebaseSetDoc(firebaseUserDoc(firebaseUser.uid), user);
+        userSnapshot = await firebaseGetDoc(firebaseUserDoc(firebaseUser.uid));
+        user = userSnapshot.exists() ? userSnapshot.data() : user;
+    }
+
+    if (!user) {
+        return null;
+    }
+
+    const role = normalizedAccountRole(user.role);
+    let roleData = {};
+    if (['customer', 'seller', 'rider'].includes(role)) {
+        const roleSnapshot = await firebaseGetDoc(firebaseRoleDoc(role, firebaseUser.uid));
+        roleData = roleSnapshot.exists() ? roleSnapshot.data() : {};
+    }
+
+    return buildAccountFromFirebaseRecords(firebaseUser.uid, firebaseUser.email || user.email || '', user, roleData);
+}
+
+function saveRoleStorageForAccount(account) {
+    if (!account) {
+        return;
+    }
+
+    const linkedId = accountLinkedId(account);
+    const role = accountRole(account);
+    if (role === 'customer') {
+        saveLocal(storageKeys.customerId, linkedId);
+        saveLocal(storageKeys.customerEmail, accountEmail(account));
+    }
+    if (role === 'seller') {
+        saveLocal(storageKeys.merchantId, linkedId);
+        saveLocal(storageKeys.sellerApplication, linkedId);
+    }
+    if (role === 'rider') {
+        saveLocal(storageKeys.shopperId, linkedId);
+        saveLocal(storageKeys.riderApplication, linkedId);
+    }
+}
+
+async function syncCurrentAccountFromFirebase(firebaseUser, options = {}) {
+    const account = await accountFromFirebaseUser(firebaseUser, options);
+    if (account) {
+        setCurrentAccount(account);
+        saveRoleStorageForAccount(account);
+    }
+    return account;
+}
+
+let firebaseAuthReadyPromise = null;
+
+function startFirebaseAuthStateSync() {
+    if (firebaseAuthReadyPromise) {
+        return firebaseAuthReadyPromise;
+    }
+
+    firebaseAuthReadyPromise = new Promise((resolve) => {
+        let resolved = false;
+        onAuthStateChanged(firebaseAuth, async (firebaseUser) => {
+            try {
+                if (firebaseUser) {
+                    await syncCurrentAccountFromFirebase(firebaseUser, {
+                        allowAdminBootstrap: firebaseUser.email === adminAccount.USER_email
+                    });
+                } else if (getCurrentAccount()) {
+                    clearCurrentAccount();
+                }
+            } catch (error) {
+                console.error('Firebase auth state sync failed', error);
+            } finally {
+                renderAuthChrome(getCurrentAccount());
+                if (!resolved) {
+                    resolved = true;
+                    resolve();
+                }
+            }
+        });
+    });
+
+    return firebaseAuthReadyPromise;
+}
+
+function firebaseAuthMessage(error) {
+    const code = String(error?.code || '');
+    if (code === 'auth/email-already-in-use') {
+        return 'This email already has an honestbee account.';
+    }
+    if (code === 'auth/invalid-credential' || code === 'auth/wrong-password' || code === 'auth/user-not-found') {
+        return 'Account was not found or password is incorrect.';
+    }
+    if (code === 'auth/too-many-requests') {
+        return 'Too many sign in attempts. Try again later.';
+    }
+    if (code === 'auth/network-request-failed') {
+        return 'Network connection failed. Check your connection and try again.';
+    }
+    return error?.message || 'Firebase Authentication request failed.';
+}
+
+function accountApprovalMessage(account) {
+    const role = accountRole(account);
+    if (role === 'seller') {
+        if (account.MERCH_approvalStatus === 'Pending') {
+            return pendingApprovalMessage;
+        }
+        if (account.MERCH_approvalStatus === 'Rejected') {
+            return 'Your merchant application has been rejected.';
+        }
+    }
+    if (role === 'rider') {
+        if (account.SHOP_employmentStatus === 'Pending') {
+            return pendingApprovalMessage;
+        }
+        if (account.SHOP_employmentStatus === 'Inactive') {
+            return 'Your rider application has been rejected.';
+        }
+    }
+    return '';
 }
 
 function isDeletedAccountRecord(record) {
@@ -432,37 +904,37 @@ function applyStickyLanguageForAccount(account = getCurrentAccount()) {
 }
 
 function redirectToWaiting(role, id) {
-    location.href = `waiting-approval.php?role=${encodeURIComponent(role)}&id=${encodeURIComponent(id)}`;
+    location.href = `waiting-approval.html?role=${encodeURIComponent(role)}&id=${encodeURIComponent(id)}`;
 }
 
 function redirectToPendingApproval() {
-    location.href = 'index.php?modal=pending-approval';
+    location.href = 'index.html?modal=pending-approval';
 }
 
 function dashboardForAccount(account) {
     const role = accountRole(account);
 
     if (role === 'admin') {
-        return 'admin-dashboard.php';
+        return 'admin-dashboard.html';
     }
 
     if (role === 'seller') {
         return account?.MERCH_approvalStatus === 'Approved'
-            ? 'seller-dashboard.php'
-            : `waiting-approval.php?role=seller&id=${encodeURIComponent(accountLinkedId(account))}`;
+            ? 'seller-dashboard.html'
+            : `waiting-approval.html?role=seller&id=${encodeURIComponent(accountLinkedId(account))}`;
     }
 
     if (role === 'rider') {
         return account?.SHOP_employmentStatus === 'Active'
-            ? 'rider-dashboard.php'
-            : `waiting-approval.php?role=rider&id=${encodeURIComponent(accountLinkedId(account))}`;
+            ? 'rider-dashboard.html'
+            : `waiting-approval.html?role=rider&id=${encodeURIComponent(accountLinkedId(account))}`;
     }
 
     if (role === 'customer') {
-        return 'customer-dashboard.php';
+        return 'customer-dashboard.html';
     }
 
-    return 'index.php?modal=signin';
+    return 'index.html?modal=signin';
 }
 
 function requireSignedRole(allowedRoles) {
@@ -470,7 +942,7 @@ function requireSignedRole(allowedRoles) {
     const role = accountRole(account);
 
     if (!account || !allowedRoles.includes(role)) {
-        location.href = account ? dashboardForAccount(account) : 'index.php?modal=signin';
+        location.href = account ? dashboardForAccount(account) : 'index.html?modal=signin';
         return null;
     }
 
@@ -1194,25 +1666,10 @@ function imageUploadLabel(input) {
 }
 
 async function uploadImageInput(input, category, label = 'Image') {
-    const file = imageFileFromInput(input, label);
-    const uploadData = new FormData();
-    uploadData.append('image', file);
-    uploadData.append('category', category);
-
-    const response = await fetch(UPLOAD_URL, {
-        method: 'POST',
-        body: uploadData
-    });
-    const data = await response.json().catch(() => ({}));
-
-    if (!response.ok || data.ok === false || !data.path) {
-        const message = data.error || `${label} could not be uploaded.`;
-        showFieldError(input, message);
-        throw new Error(message);
-    }
-
-    clearFieldError(input);
-    return data.path;
+    imageFileFromInput(input, label);
+    const message = `${label} upload is disabled in this Firebase Firestore-only version. Firebase Storage can be added later.`;
+    showFieldError(input, message);
+    throw new Error(message);
 }
 
 async function uploadOptionalImageInput(input, category, label = 'Image', fallback = '') {
@@ -1317,30 +1774,24 @@ function readGcashPaymentDetails(form) {
 
     clearFieldError(referenceInput);
 
-    if (!proofInput?.files?.length) {
-        const message = 'Upload Proof of Payment.';
-        showFieldError(proofInput, message);
-        throw new Error(message);
+    // TODO: Add Firebase Storage later for GCash proof uploads.
+    // Phase 3 does not upload the optional proof file, because this project uses Firestore only.
+    if (proofInput?.files?.length) {
+        validateImageInput(proofInput, 'Proof of Payment');
+    } else {
+        clearFieldError(proofInput);
     }
-
-    clearFieldError(proofInput);
 
     return {
         reference,
-        proofInput
+        proofPath: '',
+        proofImageUrl: ''
     };
 }
 
 async function uploadGcashPaymentProof(details) {
-    if (!details?.proofInput) {
-        return details || null;
-    }
-
-    const proofPath = await uploadImageInput(details.proofInput, 'gcash-payment', 'Proof of Payment');
-    return {
-        reference: details.reference,
-        proofPath
-    };
+    // TODO: Enable this only when Firebase Storage is available.
+    return details || null;
 }
 
 function preferredThemeMode() {
@@ -2243,115 +2694,668 @@ function listenCollection(name, render, max = 100) {
             })));
         },
         (error) => {
-            console.error(`MySQL listener failed for ${name}`, error);
+            console.error(`Firestore compatibility listener failed for ${name}`, error);
             render([], error);
         }
     );
 }
 
+function firestoreCollectionRef(name) {
+    return firebaseCollection(firestoreDb, name);
+}
+
+function firestoreProductDoc(productId) {
+    return firebaseDoc(firestoreDb, 'products', productId);
+}
+
+function firestoreSnapshotRecords(snapshot) {
+    return snapshot.docs.map((documentSnapshot) => ({
+        id: documentSnapshot.id,
+        ...documentSnapshot.data()
+    }));
+}
+
+function normalizeFirestoreProductRecord(record = {}) {
+    const productId = record.productId || record.id || record.PROD_id || '';
+    const productName = record.productName || record.name || record.PROD_name || 'Merchant product';
+    const merchantId = record.merchantId || record.MERCH_id || record.PROD_merchantId || '';
+    const imageUrl = record.imageUrl || record.image || record.PROD_image || '';
+    const status = record.status || record.approvalStatus || record.PROD_approvalStatus || 'Active';
+
+    return {
+        ...record,
+        id: productId || record.id,
+        productId: productId || record.id,
+        merchantId,
+        productName,
+        category: record.category || record.PROD_category || 'Merchant Items',
+        unit: record.unit || record.PROD_unit || '1 item',
+        price: Number(record.price ?? record.PROD_price ?? 0),
+        description: record.description || record.PROD_description || '',
+        imageUrl,
+        status,
+        PROD_id: productId || record.id,
+        PROD_name: productName,
+        PROD_category: record.category || record.PROD_category || 'Merchant Items',
+        PROD_unit: record.unit || record.PROD_unit || '1 item',
+        PROD_price: Number(record.price ?? record.PROD_price ?? 0),
+        PROD_description: record.description || record.PROD_description || '',
+        PROD_image: imageUrl,
+        MERCH_id: merchantId,
+        name: productName,
+        image: imageUrl,
+        approvalStatus: status,
+        source: 'seller-dashboard'
+    };
+}
+
+function normalizeFirestoreMerchantRecord(record = {}) {
+    return firebaseMerchantRecord(record.id || record.MERCH_id || '', record, {
+        email: record.email || record.MERCH_ownerEmail || '',
+        username: record.username || ''
+    });
+}
+
+function productRecordId(product) {
+    return String(product?.productId || product?.id || product?.PROD_id || '').trim();
+}
+
+function productRecordMerchantId(product) {
+    return String(product?.merchantId || product?.MERCH_id || product?.PROD_merchantId || '').trim();
+}
+
+function productRecordName(product) {
+    return product?.productName || product?.name || product?.PROD_name || 'Product';
+}
+
+function productRecordImageUrl(product, fallback = DEFAULT_PRODUCT_IMAGE) {
+    return product?.imageUrl || product?.image || product?.PROD_image || fallback;
+}
+
+function productRecordStatus(product) {
+    return String(product?.status || product?.approvalStatus || product?.PROD_approvalStatus || 'Active').trim();
+}
+
+function productIsActive(product) {
+    const status = roleLower(productRecordStatus(product));
+    return !status || ['active', 'available', 'approved'].includes(status);
+}
+
+function listenFirestoreMerchants(render) {
+    return firebaseOnSnapshot(
+        firestoreCollectionRef('merchants'),
+        (snapshot) => render(firestoreSnapshotRecords(snapshot).map(normalizeFirestoreMerchantRecord)),
+        (error) => {
+            console.error('Firestore merchants listener failed', error);
+            render([], error);
+        }
+    );
+}
+
+function listenFirestoreProducts(render) {
+    return firebaseOnSnapshot(
+        firestoreCollectionRef('products'),
+        (snapshot) => render(firestoreSnapshotRecords(snapshot).map(normalizeFirestoreProductRecord)),
+        (error) => {
+            console.error('Firestore products listener failed', error);
+            render([], error);
+        }
+    );
+}
+
+function listenFirestoreProductsForMerchant(merchantId, render) {
+    return firebaseOnSnapshot(
+        firebaseQuery(firestoreCollectionRef('products'), firebaseWhere('merchantId', '==', merchantId)),
+        (snapshot) => render(firestoreSnapshotRecords(snapshot).map(normalizeFirestoreProductRecord)),
+        (error) => {
+            console.error('Firestore merchant products listener failed', error);
+            render([], error);
+        }
+    );
+}
+
+async function readFirestoreProducts(max = 1000) {
+    const snapshot = await firebaseGetDocs(firebaseQuery(firestoreCollectionRef('products'), firebaseLimit(max)));
+    return firestoreSnapshotRecords(snapshot).map(normalizeFirestoreProductRecord);
+}
+
+function firestoreOrderDoc(orderId) {
+    return firebaseDoc(firestoreDb, 'orders', orderId);
+}
+
+function firestoreCartDoc(customerUid) {
+    return firebaseDoc(firestoreDb, 'carts', customerUid);
+}
+
+function firestoreCartItemsCollection(customerUid) {
+    return firebaseCollection(firestoreDb, 'carts', customerUid, 'items');
+}
+
+function firestoreCartItemDoc(customerUid, productId) {
+    return firebaseDoc(firestoreDb, 'carts', customerUid, 'items', productId);
+}
+
+function firestoreAutoDoc(collectionName) {
+    return firebaseDoc(firestoreCollectionRef(collectionName));
+}
+
+function normalizeFirestoreCartItem(record = {}) {
+    const productId = record.productId || record.id || record.PROD_id || '';
+    const quantity = Math.max(1, Number(record.quantity || record.ITEM_quantity || 1));
+    const price = Number(record.price ?? record.unitPrice ?? record.ITEM_unitPrice ?? 0) || 0;
+    const imageUrl = record.imageUrl || record.image || record.PROD_image || DEFAULT_PRODUCT_IMAGE;
+
+    return {
+        ...record,
+        id: productId,
+        productId,
+        merchantId: record.merchantId || record.MERCH_id || record.PROD_merchantId || '',
+        name: record.productName || record.name || record.PROD_name || 'Product',
+        productName: record.productName || record.name || record.PROD_name || 'Product',
+        merchant: record.merchantName || record.merchant || record.MERCH_name || 'honestbee Partner',
+        merchantName: record.merchantName || record.merchant || record.MERCH_name || 'honestbee Partner',
+        category: record.category || record.PROD_category || 'Products',
+        unit: record.unit || record.PROD_unit || '1 item',
+        price,
+        quantity,
+        image: imageUrl,
+        imageUrl,
+        subtotal: Number(record.subtotal) || price * quantity,
+        instructions: record.instructions || '',
+        substitutePolicy: record.substitutePolicy || 'suggest',
+        substituteName: record.substituteName || ''
+    };
+}
+
+function normalizeFirestoreOrderItem(item = {}, fallbackMerchantId = '') {
+    const productId = item.productId || item.id || item.PROD_id || item.product_id || '';
+    const quantity = Math.max(1, Number(item.quantity || item.ITEM_quantity || 1));
+    const price = Number(item.price ?? item.unitPrice ?? item.ITEM_unitPrice ?? 0) || 0;
+    const imageUrl = item.imageUrl || item.image || item.ITEM_image || DEFAULT_PRODUCT_IMAGE;
+
+    return {
+        ...item,
+        id: productId,
+        productId,
+        product_id: productId,
+        merchantId: item.merchantId || item.MERCH_id || fallbackMerchantId || '',
+        name: item.productName || item.name || item.ITEM_name || 'Product',
+        productName: item.productName || item.name || item.ITEM_name || 'Product',
+        ITEM_name: item.productName || item.name || item.ITEM_name || 'Product',
+        quantity,
+        ITEM_quantity: quantity,
+        price,
+        unitPrice: price,
+        ITEM_unitPrice: price,
+        unit: item.unit || item.PROD_unit || '1 item',
+        image: imageUrl,
+        imageUrl,
+        ITEM_image: imageUrl,
+        subtotal: Number(item.subtotal) || price * quantity,
+        instructions: item.instructions || '',
+        substitutePolicy: item.substitutePolicy || 'suggest',
+        substituteName: item.substituteName || ''
+    };
+}
+
+function orderItemsFromFirestoreOrder(order = {}) {
+    const rawItems = Array.isArray(order.items)
+        ? order.items
+        : order.items && typeof order.items === 'object'
+            ? Object.values(order.items)
+            : [];
+
+    return rawItems.map((item) => normalizeFirestoreOrderItem(item, order.merchantId || order.MERCH_id || order.merch_id || ''));
+}
+
+function normalizeFirestoreOrderRecord(record = {}) {
+    const orderId = record.orderId || record.order_id || record.ORDER_id || record.id || '';
+    const items = orderItemsFromFirestoreOrder(record);
+    const summary = record.summary || {};
+    const totalAmount = Number(record.totalAmount ?? record.ORDER_totalAmount ?? summary.total ?? 0) || 0;
+    const subtotal = Number(summary.subtotal ?? items.reduce((sum, item) => sum + (Number(item.subtotal) || 0), 0)) || 0;
+    const delivery = Number(summary.delivery ?? record.deliveryFee ?? record.DELIVERY_fee ?? 0) || 0;
+    const serviceFee = Number(summary.serviceFee ?? record.serviceFee ?? 0) || 0;
+    const merchantId = record.merchantId || record.MERCH_id || record.merch_id || '';
+    const customerId = record.customerId || record.CUST_id || record.customer_id || '';
+    const riderId = record.riderId || record.SHOP_id || record.shopper_id || '';
+    const orderStatusValue = record.orderStatus || record.order_status || record.ORDER_status || 'Pending';
+    const paymentStatusValue = record.paymentStatus || record.payment_status || record.PAY_status || record.ORDER_paymentStatus || 'Unpaid';
+    const paymentMethodValue = record.paymentMethod || record.payment_method || record.PAY_method || record.ORDER_paymentMethod || '';
+    const proofImageUrl = record.proofImageUrl || record.payment_proof || record.gcash_proof || '';
+
+    return {
+        ...record,
+        id: orderId,
+        orderId,
+        order_id: orderId,
+        ORDER_id: orderId,
+        customerId,
+        customer_id: customerId,
+        CUST_id: customerId,
+        merchantId,
+        merch_id: merchantId,
+        MERCH_id: merchantId,
+        riderId,
+        shopper_id: riderId,
+        SHOP_id: riderId,
+        items,
+        totalAmount,
+        ORDER_totalAmount: totalAmount,
+        orderStatus: orderStatusValue,
+        order_status: orderStatusValue,
+        ORDER_status: orderStatusValue,
+        paymentMethod: paymentMethodValue,
+        payment_method: paymentMethodValue,
+        PAY_method: paymentMethodValue,
+        paymentStatus: paymentStatusValue,
+        payment_status: paymentStatusValue,
+        PAY_status: paymentStatusValue,
+        gcashReference: record.gcashReference || record.gcash_reference || record.payment_reference || '',
+        gcash_reference: record.gcashReference || record.gcash_reference || record.payment_reference || '',
+        proofImageUrl,
+        payment_proof: proofImageUrl,
+        gcash_proof: proofImageUrl,
+        customer_name: record.customerName || record.customer_name || '',
+        customer_email: record.customerEmail || record.customer_email || '',
+        customer_phone: record.customerPhone || record.customer_phone || '',
+        customer_address: record.deliveryAddress || record.customer_address || '',
+        merchant_name: record.merchantName || record.merchant_name || 'honestbee Partner',
+        scheduled_time: record.deliveryTime || record.scheduled_time || record.ORDER_scheduledTime || 'ASAP',
+        store_acceptance_status: record.storeAcceptanceStatus || record.store_acceptance_status || record.STORE_acceptanceStatus || '',
+        STORE_acceptanceStatus: record.storeAcceptanceStatus || record.store_acceptance_status || record.STORE_acceptanceStatus || '',
+        requires_seller_payment_verification: Boolean(record.requiresSellerPaymentVerification ?? record.requires_seller_payment_verification),
+        seller_payment_verified: Boolean(record.sellerPaymentVerified ?? record.seller_payment_verified),
+        summary: {
+            subtotal,
+            delivery,
+            serviceFee,
+            total: totalAmount || subtotal + delivery + serviceFee
+        },
+        item_count: Number(record.itemCount || record.item_count || items.reduce((sum, item) => sum + (Number(item.quantity) || 1), 0)) || 0
+    };
+}
+
+function firestoreSnapshotOrderRecords(snapshot) {
+    return sortDashboardOrders(firestoreSnapshotRecords(snapshot).map(normalizeFirestoreOrderRecord));
+}
+
+function listenFirestoreOrdersForCustomer(customerUid, customerEmail, render) {
+    if (!customerUid) {
+        render([]);
+        return () => {};
+    }
+
+    return firebaseOnSnapshot(
+        firebaseQuery(firestoreCollectionRef('orders'), firebaseWhere('customerId', '==', customerUid)),
+        (snapshot) => render(firestoreSnapshotOrderRecords(snapshot)),
+        (error) => {
+            console.error('Firestore customer orders listener failed', error);
+            render([], error);
+        }
+    );
+}
+
+function listenFirestoreOrdersForMerchant(merchantId, render) {
+    if (!merchantId) {
+        render([]);
+        return () => {};
+    }
+
+    return firebaseOnSnapshot(
+        firebaseQuery(firestoreCollectionRef('orders'), firebaseWhere('merchantId', '==', merchantId)),
+        (snapshot) => render(firestoreSnapshotOrderRecords(snapshot)),
+        (error) => {
+            console.error('Firestore merchant orders listener failed', error);
+            render([], error);
+        }
+    );
+}
+
+function listenFirestoreOrders(render) {
+    return firebaseOnSnapshot(
+        firestoreCollectionRef('orders'),
+        (snapshot) => render(firestoreSnapshotOrderRecords(snapshot)),
+        (error) => {
+            console.error('Firestore orders listener failed', error);
+            render([], error);
+        }
+    );
+}
+
+async function readFirestoreOrder(orderId) {
+    if (!orderId) {
+        return null;
+    }
+
+    const snapshot = await firebaseGetDoc(firestoreOrderDoc(orderId));
+    return snapshot.exists()
+        ? normalizeFirestoreOrderRecord({ id: snapshot.id, ...snapshot.data() })
+        : null;
+}
+
+async function readFirestoreOrderItems(orderId) {
+    const order = await readFirestoreOrder(orderId);
+    return order ? orderItemsFromFirestoreOrder(order) : [];
+}
+
+async function deleteFirestoreOrder(orderId) {
+    if (!orderId) {
+        return;
+    }
+
+    await firebaseDeleteDoc(firestoreOrderDoc(orderId));
+}
+
+function firestoreRatingDoc(ratingId) {
+    return firebaseDoc(firestoreDb, 'ratings', ratingId);
+}
+
+function firestoreRefundDoc(refundId) {
+    return firebaseDoc(firestoreDb, 'refunds', refundId);
+}
+
+function normalizeFirestoreRatingRecord(record = {}) {
+    const ratingId = record.ratingId || record.RATE_id || record.id || '';
+    const orderId = record.orderId || record.order_id || record.ORDER_id || '';
+    const customerId = record.customerId || record.customer_id || record.CUST_id || '';
+    const riderId = record.riderId || record.shopper_id || record.SHOP_id || '';
+    const serviceScore = Number(record.serviceScore ?? record.RATE_serviceScore ?? 5) || 5;
+    const shopperScore = Number(record.shopperScore ?? record.RATE_shopperScore ?? 5) || 5;
+    const comment = record.comment || record.RATE_feedbackComment || '';
+
+    return {
+        ...record,
+        id: ratingId,
+        ratingId,
+        RATE_id: ratingId,
+        orderId,
+        order_id: orderId,
+        ORDER_id: orderId,
+        customerId,
+        customer_id: customerId,
+        CUST_id: customerId,
+        riderId,
+        shopper_id: riderId,
+        SHOP_id: riderId,
+        serviceScore,
+        shopperScore,
+        RATE_serviceScore: serviceScore,
+        RATE_shopperScore: shopperScore,
+        comment,
+        RATE_feedbackComment: comment,
+        RATE_date: record.RATE_date || record.createdAt || record.updatedAt || null
+    };
+}
+
+function normalizeFirestoreRefundRecord(record = {}) {
+    const refundId = record.refundId || record.REFUND_id || record.id || '';
+    const orderId = record.orderId || record.order_id || record.ORDER_id || '';
+    const customerId = record.customerId || record.customer_id || record.CUST_id || '';
+    const amount = Number(record.amount ?? record.REFUND_amount ?? 0) || 0;
+    const reason = record.reason || record.REFUND_reason || '';
+    const status = record.status || record.REFUND_status || 'Pending';
+
+    return {
+        ...record,
+        id: refundId,
+        refundId,
+        REFUND_id: refundId,
+        orderId,
+        order_id: orderId,
+        ORDER_id: orderId,
+        customerId,
+        customer_id: customerId,
+        CUST_id: customerId,
+        amount,
+        REFUND_amount: amount,
+        reason,
+        REFUND_reason: reason,
+        status,
+        REFUND_status: status,
+        REFUND_date: record.REFUND_date || record.createdAt || record.updatedAt || null
+    };
+}
+
+function listenFirestoreRatings(render) {
+    return firebaseOnSnapshot(
+        firestoreCollectionRef('ratings'),
+        (snapshot) => render(firestoreSnapshotRecords(snapshot).map(normalizeFirestoreRatingRecord)),
+        (error) => {
+            console.error('Firestore ratings listener failed', error);
+            render([], error);
+        }
+    );
+}
+
+function listenFirestoreRefunds(render) {
+    return firebaseOnSnapshot(
+        firestoreCollectionRef('refunds'),
+        (snapshot) => render(firestoreSnapshotRecords(snapshot).map(normalizeFirestoreRefundRecord)),
+        (error) => {
+            console.error('Firestore refunds listener failed', error);
+            render([], error);
+        }
+    );
+}
+
+async function readCustomerRatingForOrder(orderId, customerId) {
+    if (!orderId || !customerId) {
+        return null;
+    }
+
+    const snapshot = await firebaseGetDocs(firebaseQuery(
+        firestoreCollectionRef('ratings'),
+        firebaseWhere('orderId', '==', orderId),
+        firebaseWhere('customerId', '==', customerId),
+        firebaseLimit(1)
+    ));
+
+    if (!snapshot.empty) {
+        const first = snapshot.docs[0];
+        return normalizeFirestoreRatingRecord({ id: first.id, ...first.data() });
+    }
+
+    const legacySnapshot = await firebaseGetDocs(firebaseQuery(
+        firestoreCollectionRef('ratings'),
+        firebaseWhere('ORDER_id', '==', orderId),
+        firebaseWhere('CUST_id', '==', customerId),
+        firebaseLimit(1)
+    )).catch(() => null);
+
+    if (legacySnapshot && !legacySnapshot.empty) {
+        const first = legacySnapshot.docs[0];
+        return normalizeFirestoreRatingRecord({ id: first.id, ...first.data() });
+    }
+
+    return null;
+}
+
+async function readCustomerRefundsForOrder(orderId, customerId) {
+    if (!orderId || !customerId) {
+        return [];
+    }
+
+    const snapshot = await firebaseGetDocs(firebaseQuery(
+        firestoreCollectionRef('refunds'),
+        firebaseWhere('orderId', '==', orderId),
+        firebaseWhere('customerId', '==', customerId),
+        firebaseLimit(25)
+    ));
+
+    let records = firestoreSnapshotRecords(snapshot).map(normalizeFirestoreRefundRecord);
+    if (records.length > 0) {
+        return records;
+    }
+
+    const legacySnapshot = await firebaseGetDocs(firebaseQuery(
+        firestoreCollectionRef('refunds'),
+        firebaseWhere('ORDER_id', '==', orderId),
+        firebaseWhere('CUST_id', '==', customerId),
+        firebaseLimit(25)
+    )).catch(() => null);
+
+    records = legacySnapshot ? firestoreSnapshotRecords(legacySnapshot).map(normalizeFirestoreRefundRecord) : [];
+    return records;
+}
+
+async function deleteFirestoreRating(ratingId) {
+    if (!ratingId) {
+        return;
+    }
+
+    await firebaseDeleteDoc(firestoreRatingDoc(ratingId));
+}
+
+function productImageUrlForSave(_input, fallback = DEFAULT_PRODUCT_IMAGE) {
+    // TODO: Upload selected product images with Firebase Storage later; Phase 2 stores a string path only.
+    return fallback || '';
+}
+
+async function deleteFirestoreProduct(productId) {
+    if (!productId) {
+        return;
+    }
+
+    await firebaseDeleteDoc(firestoreProductDoc(productId));
+}
+
 async function saveCustomerOrder(payload) {
     const items = Array.isArray(payload.items) ? payload.items : [];
-    const closedOrderStore = items
+    const normalizedItems = items.map((item) => normalizeFirestoreOrderItem(item, item?.merchantId || item?.MERCH_id || ''));
+    const closedOrderStore = normalizedItems
         .map((item) => {
-            const merchantId = String(item?.merchantId || item?.MERCH_id || item?.PROD_merchantId || '').trim();
+            const merchantId = String(item?.merchantId || item?.MERCH_id || '').trim();
             return (merchantId && storeCatalogs[merchantId])
-                || getStoreByMerchantName(item?.merchant || item?.merchant_name || item?.MERCH_name || '')
+                || getStoreByMerchantName(item?.merchant || item?.merchantName || item?.MERCH_name || '')
                 || null;
         })
         .find((store) => store && !merchantStoreIsOpen(store));
+
     if (closedOrderStore) {
         throw new Error(storeCurrentlyClosedMessage);
     }
 
-    const firstItem = items[0] || {};
-    const merchantName = firstItem.merchant || 'honestbee Partner';
-    const customerId = await customerIdForEmail(payload.email);
-    const sourceMerchantId = firstItem.merchantId || '';
-    const merchantId = await merchantIdForStore(merchantName, sourceMerchantId || merchantDocId(merchantName));
+    if (normalizedItems.length === 0) {
+        throw new Error('Your cart is empty.');
+    }
+
+    const activeAccount = getCurrentAccount();
+    const customerUid = accountLinkedId(activeAccount) || activeAccount?.USER_id || '';
+    if (!customerUid) {
+        throw new Error('Please sign in before checking out.');
+    }
+
+    const firstItem = normalizedItems[0] || {};
+    const merchantName = firstItem.merchantName || firstItem.merchant || 'honestbee Partner';
+    const sourceMerchantId = firstItem.merchantId || firstItem.MERCH_id || '';
+    const merchantId = sourceMerchantId || await merchantIdForStore(merchantName, sourceMerchantId || merchantDocId(merchantName));
     const store = getStoreByMerchantName(merchantName);
+
     if (store && !merchantStoreIsOpen(store)) {
         throw new Error(storeCurrentlyClosedMessage);
     }
-    const total = Number(payload.summary?.total || payload.summary?.subtotal || 0);
-    const subtotal = Number(payload.summary?.subtotal || 0);
+
+    const subtotal = Number(payload.summary?.subtotal || normalizedItems.reduce((sum, item) => sum + ((Number(item.price) || 0) * (Number(item.quantity) || 1)), 0));
+    const deliveryFee = Number(payload.summary?.delivery || 0);
+    const serviceFee = Number(payload.summary?.serviceFee || 0);
+    const total = Number(payload.summary?.total || subtotal + deliveryFee + serviceFee);
     const isBuiltInStore = isBuiltInStoreReference(sourceMerchantId || merchantId, merchantName);
     const isOnlinePayment = isOnlinePaymentMethod(payload.payment_method);
+    const isGcash = isGcashPaymentMethod(payload.payment_method);
     const requiresSellerPaymentVerification = isOnlinePayment && !isBuiltInStore;
-    const paymentStatus = isOnlinePayment
-        ? requiresSellerPaymentVerification ? 'Pending merchant verification' : 'Paid'
-        : 'Unpaid';
+    const paymentStatus = isGcash
+        ? 'Pending Verification'
+        : isOnlinePayment
+            ? requiresSellerPaymentVerification ? 'Pending merchant verification' : 'Paid'
+            : 'Unpaid';
     const storeAcceptanceStatus = requiresSellerPaymentVerification ? 'Payment verification pending' : 'Accepted';
     const paymentVerificationStatus = requiresSellerPaymentVerification
         ? 'Pending'
         : isOnlinePayment ? 'Auto accepted' : 'Not required';
-    const cardDetails = payload.card_details || null;
     const gcashDetails = payload.gcash_details || null;
     const paymentReference = gcashDetails?.reference || '';
-    const paymentProof = gcashDetails?.proofPath || '';
+    const proofImageUrl = '';
+    // TODO: Add Firebase Storage later for GCash proof uploads. Phase 3 keeps proofImageUrl empty.
+    const cardDetails = payload.card_details || null;
     const customerNameParts = splitFullName(payload.customer_name);
 
-    await setDoc(docRef(collections.customer, customerId), {
-        CUST_id: customerId,
-        CUST_firstName: customerNameParts.firstName,
-        CUST_lastName: customerNameParts.lastName,
-        CUST_email: String(payload.email || '').toLowerCase(),
-        CUST_phone: payload.phone,
-        CUST_city: normalizeServiceCity(payload.city) || null,
-        CUST_address: payload.address,
-        CUST_createdAt: serverTimestamp(),
+    await firebaseSetDoc(firebaseUserDoc(customerUid), {
+        email: String(payload.email || '').toLowerCase(),
+        username: payload.customer_name,
+        role: 'customer',
+        status: 'active',
+        updatedAt: firebaseServerTimestamp()
+    }, { merge: true });
+
+    await firebaseSetDoc(firebaseRoleDoc('customer', customerUid), {
         firstName: customerNameParts.firstName,
         lastName: customerNameParts.lastName,
-        city: normalizeServiceCity(payload.city) || null,
-        email: String(payload.email || '').toLowerCase(),
         phone: payload.phone,
         address: payload.address,
-        role: 'customer',
-        updatedAt: serverTimestamp()
+        city: normalizeServiceCity(payload.city) || null,
+        profileImageUrl: '',
+        updatedAt: firebaseServerTimestamp()
     }, { merge: true });
 
-    const accountUser = await findFirstByField(collections.userAccount, 'USER_email', String(payload.email || '').toLowerCase());
-    if (accountUser) {
-        await setDoc(docRef(collections.userAccount, accountUser.USER_id || accountUser.id), {
-            USER_linkedId: customerId,
-            updatedAt: serverTimestamp()
-        }, { merge: true });
-    }
-
-    await setDoc(docRef(collections.merchant, merchantId), {
-        MERCH_id: merchantId,
-        MERCH_name: merchantName,
-        MERCH_type: firstItem.type === 'food' ? 'Food' : 'Grocery',
-        MERCH_address: store?.meta || 'Cebu partner location',
-        MERCH_approvalStatus: 'Approved',
-        MERCH_businessHours: store?.eta || '08:00-21:00',
-        MERCH_storeStatus: merchantStoreStatusLabel(store),
-        MERCH_createdAt: serverTimestamp(),
-        role: 'seller'
-    }, { merge: true });
-
-    const deliveryDocument = await addDoc(collectionRef(collections.delivery), {
-        DELIVERY_address: payload.address,
-        DELIVERY_serviceArea: payload.city || 'Cebu City',
-        DELIVERY_status: 'Pending',
-        DELIVERY_time: payload.delivery_time,
-        DELIVERY_serviceHours: store?.eta || '08:00-21:00',
-        address: payload.address,
-        serviceArea: payload.city || 'Cebu City',
-        status: 'Pending',
-        scheduledTime: payload.delivery_time,
-        createdAt: serverTimestamp()
-    });
-
+    const orderRef = firestoreAutoDoc('orders');
+    const orderId = orderRef.id;
+    const createdAt = firebaseServerTimestamp();
     const orderPayload = {
-        CUST_id: customerId,
+        orderId,
+        customerId: customerUid,
+        merchantId,
+        riderId: '',
+        items: normalizedItems.map((item) => ({
+            productId: item.productId || item.id,
+            merchantId: item.merchantId || merchantId,
+            productName: item.productName || item.name,
+            name: item.name || item.productName,
+            category: item.category || 'Products',
+            unit: item.unit || '1 item',
+            price: Number(item.price) || 0,
+            quantity: Number(item.quantity) || 1,
+            imageUrl: item.imageUrl || item.image || DEFAULT_PRODUCT_IMAGE,
+            image: item.image || item.imageUrl || DEFAULT_PRODUCT_IMAGE,
+            subtotal: (Number(item.price) || 0) * (Number(item.quantity) || 1),
+            instructions: item.instructions || '',
+            substitutePolicy: item.substitutePolicy || 'suggest',
+            substituteName: item.substituteName || ''
+        })),
+        totalAmount: total,
+        paymentMethod: payload.payment_method,
+        paymentStatus,
+        orderStatus: 'Pending',
+        deliveryAddress: payload.address,
+        deliveryCity: payload.city || '',
+        deliveryTime: payload.delivery_time,
+        customerName: payload.customer_name,
+        customerEmail: String(payload.email || '').toLowerCase(),
+        customerPhone: payload.phone,
+        merchantName,
+        gcashReference: paymentReference,
+        proofImageUrl,
+        cardDetails,
+        storeSource: isBuiltInStore ? 'built-in' : 'registered-seller',
+        storeAcceptanceStatus,
+        requiresSellerPaymentVerification,
+        sellerPaymentVerified: isOnlinePayment && !requiresSellerPaymentVerification,
+        paymentVerificationStatus,
+        paymentVerifiedBy: requiresSellerPaymentVerification ? '' : isOnlinePayment ? 'honestbee-auto' : '',
+        summary: {
+            subtotal,
+            delivery: deliveryFee,
+            serviceFee,
+            total
+        },
+        itemCount: normalizedItems.reduce((sum, item) => sum + (Number(item.quantity) || 1), 0),
+        // Legacy-compatible fields used by the existing honestbee UI.
+        CUST_id: customerUid,
         SHOP_id: '',
         MERCH_id: merchantId,
-        DELIVERY_id: deliveryDocument.id,
-        ORDER_date: serverTimestamp(),
-        ORDER_status: 'Placed',
-        ORDER_totalAmount: total,
-        ORDER_scheduledTime: payload.delivery_time,
-        customer_id: customerId,
+        ORDER_id: orderId,
+        order_id: orderId,
+        customer_id: customerUid,
         customer_email: String(payload.email || '').toLowerCase(),
         customer_name: payload.customer_name,
         customer_phone: payload.phone,
@@ -2359,16 +3363,16 @@ async function saveCustomerOrder(payload) {
         shopper_id: '',
         merch_id: merchantId,
         merchant_name: merchantName,
-        store_status: merchantStoreStatusLabel(store),
-        STORE_status: merchantStoreStatusLabel(store),
-        delivery_id: deliveryDocument.id,
-        order_status: 'Placed',
+        order_status: 'Pending',
+        ORDER_status: 'Pending',
+        ORDER_totalAmount: total,
+        ORDER_scheduledTime: payload.delivery_time,
         payment_method: payload.payment_method,
         payment_status: paymentStatus,
         payment_reference: paymentReference,
-        payment_proof: paymentProof,
+        payment_proof: proofImageUrl,
         gcash_reference: paymentReference,
-        gcash_proof: paymentProof,
+        gcash_proof: proofImageUrl,
         payment_card: cardDetails,
         payment_card_last4: cardDetails?.last4 || '',
         payment_cardholder: cardDetails?.cardholderName || '',
@@ -2380,109 +3384,21 @@ async function saveCustomerOrder(payload) {
         payment_verification_status: paymentVerificationStatus,
         payment_verified_by: requiresSellerPaymentVerification ? '' : isOnlinePayment ? 'honestbee-auto' : '',
         scheduled_time: payload.delivery_time,
-        summary: {
-            subtotal,
-            delivery: Number(payload.summary?.delivery || 0),
-            serviceFee: Number(payload.summary?.serviceFee || 0),
-            total
-        },
-        item_count: items.reduce((sum, item) => sum + (Number(item.quantity) || 1), 0),
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp()
+        item_count: normalizedItems.reduce((sum, item) => sum + (Number(item.quantity) || 1), 0),
+        ORDER_date: createdAt,
+        createdAt,
+        updatedAt: createdAt
     };
 
-    const orderDocument = await addDoc(collectionRef(collections.customerOrder), orderPayload);
-    const orderId = orderDocument.id;
+    await firebaseSetDoc(orderRef, orderPayload);
 
-    await setDoc(docRef(collections.orders, orderId), {
-        ...orderPayload,
-        ORDER_id: orderId,
-        order_id: orderId
-    }, { merge: true });
-
-    await setDoc(docRef(collections.paymentTransaction, orderId), {
-        ORDER_id: orderId,
-        PAY_amount: total,
-        PAY_method: payload.payment_method,
-        PAY_status: paymentStatus,
-        PAY_date: serverTimestamp(),
-        PAY_reference: paymentReference || `HB-${orderId.slice(0, 8).toUpperCase()}`,
-        PAY_proof: paymentProof,
-        PAY_cardLast4: cardDetails?.last4 || '',
-        PAY_cardholderName: cardDetails?.cardholderName || '',
-        PAY_verificationStatus: paymentVerificationStatus,
-        PAY_verifiedBy: requiresSellerPaymentVerification ? '' : isOnlinePayment ? 'honestbee-auto' : '',
-        order_id: orderId,
-        amount: total,
-        method: payload.payment_method,
-        status: paymentStatus,
-        payment_proof: paymentProof,
-        proof_path: paymentProof,
-        card_last4: cardDetails?.last4 || '',
-        cardholder_name: cardDetails?.cardholderName || '',
-        verification_status: paymentVerificationStatus,
-        verified_by: requiresSellerPaymentVerification ? '' : isOnlinePayment ? 'honestbee-auto' : '',
-        createdAt: serverTimestamp()
-    }, { merge: true });
-
-    for (const item of items) {
-        const itemImage = orderItemImage(item);
-
-        await setDoc(docRef(collections.products, item.id), {
-            ...item,
-            image: itemImage,
-            PROD_image: itemImage,
-            PROD_id: item.id,
-            PROD_name: item.name,
-            PROD_price: Number(item.price) || 0,
-            MERCH_id: merchantId,
-            approvalStatus: 'Active',
-            updatedAt: serverTimestamp()
-        }, { merge: true });
-
-        const orderItemDocument = await addDoc(collectionRef(collections.orderItem), {
-            ORDER_id: orderId,
-            ITEM_name: item.name,
-            ITEM_quantity: Number(item.quantity) || 1,
-            ITEM_unitPrice: Number(item.price) || 0,
-            ITEM_status: item.substitutePolicy === 'choose' ? 'Substituted' : 'Available',
-            order_id: orderId,
-            product_id: item.id,
-            merchant_name: item.merchant,
-            merchantId: item.merchantId || merchantId,
-            unit: item.unit || '1 pack',
-            image: itemImage,
-            ITEM_image: itemImage,
-            instructions: item.instructions || '',
-            substitutePolicy: item.substitutePolicy || 'suggest',
-            createdAt: serverTimestamp()
-        });
-
-        if (item.substitutePolicy === 'choose') {
-            await addDoc(collectionRef(collections.substitution), {
-                ITEM_id: orderItemDocument.id,
-                ORDER_id: orderId,
-                SUB_originalItem: item.name,
-                SUB_substituteItem: item.substituteName || `${item.name} substitute`,
-                SUB_approvalStatus: 'Approved',
-                SUB_approvalDate: serverTimestamp(),
-                item_id: orderItemDocument.id,
-                order_id: orderId,
-                originalItem: item.name,
-                substituteItem: item.substituteName || `${item.name} substitute`,
-                approvalStatus: 'Approved',
-                createdAt: serverTimestamp()
-            });
-        }
-    }
-
-    saveLocal(storageKeys.customerId, customerId);
+    saveLocal(storageKeys.customerId, customerUid);
     saveLocal(storageKeys.customerEmail, String(payload.email || '').toLowerCase());
     saveLocal(storageKeys.lastOrderId, orderId);
 
     return {
         id: orderId,
-        customerId
+        customerId: customerUid
     };
 }
 
@@ -2597,8 +3513,16 @@ async function customerIdForEmail(email, account = getCurrentAccount()) {
 
 async function merchantIdForStore(merchantName, fallbackId = '') {
     const fallback = String(fallbackId || '').trim();
-    if (isMerchantRecordId(fallback)) {
+    if (isMerchantRecordId(fallback) || (fallback && !builtInStoreIds.has(fallback))) {
         return fallback;
+    }
+
+    const firestoreMerchants = await firebaseGetDocs(firestoreCollectionRef('merchants')).catch(() => null);
+    const firestoreMerchant = firestoreMerchants
+        ? firestoreSnapshotRecords(firestoreMerchants).find((record) => record.storeName === merchantName || record.MERCH_name === merchantName)
+        : null;
+    if (firestoreMerchant?.id) {
+        return firestoreMerchant.id;
     }
 
     const merchant = await findFirstByField(collections.merchant, 'MERCH_name', merchantName);
@@ -2800,194 +3724,157 @@ async function hydrateCurrentAccount(account) {
     return hydratedAccount;
 }
 
-async function handleSellerLogin(email, password, notice) {
-    const merchant = await findFirstByField(collections.merchant, 'MERCH_ownerEmail', email);
-    if (!isSellerRecord(merchant) || merchant.MERCH_password !== password) {
-        setNotice(notice, 'Merchant account was not found or password is incorrect.', true);
-        return;
-    }
-
-    if (merchant.MERCH_approvalStatus === 'Pending') {
-        setNotice(notice, pendingApprovalMessage, true);
-        return;
-    }
-
-    if (merchant.MERCH_approvalStatus !== 'Approved') {
-        setNotice(notice, 'Your application has been rejected.', true);
-        return;
-    }
-
-    const ownerName = merchantOwnerName(merchant);
-    const account = {
-        USER_role: 'seller',
-        USER_email: email,
-        USER_linkedId: merchant.MERCH_id || merchant.id,
-        USER_displayName: ownerName || merchant.MERCH_name || '',
-        MERCH_ownerFirstName: merchant.MERCH_ownerFirstName || '',
-        MERCH_ownerLastName: merchant.MERCH_ownerLastName || '',
-        MERCH_phone: merchant.MERCH_phone || '',
-        MERCH_name: merchant.MERCH_name || '',
-        MERCH_type: merchant.MERCH_type || '',
-        MERCH_address: merchant.MERCH_address || '',
-        MERCH_availableDays: merchant.MERCH_availableDays || '',
-        MERCH_preparationTime: merchant.MERCH_preparationTime || '',
-        MERCH_storeStatus: merchantStoreStatusLabel(merchant),
-        MERCH_approvalStatus: merchant.MERCH_approvalStatus
-    };
-    setCurrentAccount(account);
-    saveLocal(storageKeys.merchantId, accountLinkedId(account));
-    location.href = 'seller-dashboard.php';
-}
-
-async function handleRiderLogin(email, password, notice) {
-    const shopper = await findFirstByField(collections.shopper, 'SHOP_email', email);
-    if (!isRiderRecord(shopper) || shopper.SHOP_password !== password) {
-        setNotice(notice, 'Rider account was not found or password is incorrect.', true);
-        return;
-    }
-
-    if (shopper.SHOP_employmentStatus === 'Pending') {
-        setNotice(notice, pendingApprovalMessage, true);
-        return;
-    }
-
-    if (shopper.SHOP_employmentStatus !== 'Active') {
-        setNotice(notice, 'Your application has been rejected.', true);
-        return;
-    }
-
-    const shopperName = riderFullName(shopper);
-    const account = {
-        USER_role: 'rider',
-        USER_email: email,
-        USER_linkedId: shopper.SHOP_id || shopper.id,
-        USER_displayName: shopperName,
-        SHOP_firstName: shopper.SHOP_firstName || '',
-        SHOP_lastName: shopper.SHOP_lastName || '',
-        SHOP_phone: shopper.SHOP_phone || '',
-        SHOP_currentLocation: shopper.SHOP_currentLocation || '',
-        SHOP_vehicleType: shopper.SHOP_vehicleType || '',
-        SHOP_maxActiveOrders: shopper.SHOP_maxActiveOrders || 1,
-        SHOP_employmentStatus: shopper.SHOP_employmentStatus
-    };
-    setCurrentAccount(account);
-    saveLocal(storageKeys.shopperId, accountLinkedId(account));
-    location.href = 'rider-dashboard.php';
-}
-
-async function handleCustomerLogin(email, password, notice) {
-    const user = await findFirstByField(collections.userAccount, 'USER_email', email);
-    if (isDeletedAccountRecord(user)) {
-        setNotice(notice, deletedAccountMessage, true);
-        return;
-    }
-
-    if (!user || user.USER_password !== password || roleLower(user.USER_role) !== 'customer') {
-        setNotice(notice, 'Customer account was not found or password is incorrect.', true);
-        return;
-    }
-
-    const customerId = await ensureCustomerProfileForUser(user);
-    const customer = await customerProfileForUser(user, customerId);
-    const customerAddress = cleanAddressPart(customer?.CUST_address || customer?.address || '');
-    setCurrentAccount({
-        USER_role: 'customer',
-        USER_email: email,
-        USER_linkedId: customerId || user.USER_linkedId || user.USER_id,
-        USER_displayName: userFullName(user) || '',
-        USER_firstName: user.USER_firstName || '',
-        USER_lastName: user.USER_lastName || '',
-        USER_phone: user.USER_phone || '',
-        USER_city: normalizeServiceCity(user.USER_city || customer?.CUST_city || customer?.city) || deriveServiceCityFromAddress(customerAddress) || '',
-        USER_address: customerAddress,
-        USER_preferredDeliveryTime: user.USER_preferredDeliveryTime || ''
-    });
-    if (customerId) {
-        saveLocal(storageKeys.customerId, customerId);
-    }
-    saveLocal(storageKeys.customerEmail, email);
-    location.href = 'customer-dashboard.php';
-}
-
 async function handleAutoLogin(email, password, notice) {
-    if (email === adminAccount.USER_email) {
-        handleAdminLogin(email, password, notice);
-        return;
-    }
+    let credential = null;
 
-    const merchant = await findFirstByField(collections.merchant, 'MERCH_ownerEmail', email);
-    if (isSellerRecord(merchant)) {
-        if (merchant.MERCH_password !== password) {
-            setNotice(notice, 'Password is incorrect.', true);
-            return;
+    try {
+        credential = await signInWithEmailAndPassword(firebaseAuth, email, password);
+    } catch (error) {
+        const canBootstrapAdmin = email === adminAccount.USER_email
+            && ['auth/user-not-found', 'auth/invalid-credential'].includes(error?.code)
+            && password === currentAdminPassword();
+        if (canBootstrapAdmin) {
+            try {
+                credential = await createUserWithEmailAndPassword(firebaseAuth, email, password);
+            } catch (createError) {
+                throw new Error(firebaseAuthMessage(createError));
+            }
+        } else {
+            throw new Error(firebaseAuthMessage(error));
         }
-        await handleSellerLogin(email, password, notice);
+    }
+
+    const account = await syncCurrentAccountFromFirebase(credential.user, {
+        allowAdminBootstrap: email === adminAccount.USER_email && password === currentAdminPassword()
+    });
+
+    if (!account) {
+        await signOut(firebaseAuth).catch(() => {});
+        clearCurrentAccount();
+        setNotice(notice, 'Account profile was not found in Firestore.', true);
         return;
     }
 
-    const shopper = await findFirstByField(collections.shopper, 'SHOP_email', email);
-    if (isRiderRecord(shopper)) {
-        if (shopper.SHOP_password !== password) {
-            setNotice(notice, 'Password is incorrect.', true);
-            return;
-        }
-        await handleRiderLogin(email, password, notice);
-        return;
-    }
-
-    const user = await findFirstByField(collections.userAccount, 'USER_email', email);
-    if (isDeletedAccountRecord(user)) {
+    if (isDeletedAccountRecord(account)) {
+        await signOut(firebaseAuth).catch(() => {});
+        clearCurrentAccount();
         setNotice(notice, deletedAccountMessage, true);
         return;
     }
 
-    if (!user || roleLower(user.USER_role) !== 'customer') {
-        setNotice(notice, 'No account found for that email address.', true);
+    const approvalMessage = accountApprovalMessage(account);
+    if (approvalMessage) {
+        setNotice(notice, approvalMessage, accountRole(account) !== 'customer');
+        window.setTimeout(() => {
+            location.href = dashboardForAccount(account);
+        }, 500);
         return;
     }
 
-    if (user.USER_password !== password) {
-        setNotice(notice, 'Password is incorrect.', true);
-        return;
-    }
-
-    await handleCustomerLogin(email, password, notice);
+    location.href = dashboardForAccount(account);
 }
 
-function handleAdminLogin(email, password, notice) {
-    if (email !== adminAccount.USER_email || password !== currentAdminPassword()) {
-        setNotice(notice, 'Admin account was not found or password is incorrect.', true);
-        return;
-    }
+async function handleAdminLogin(email, password, notice) {
+    await handleAutoLogin(email, password, notice);
+}
 
-    setCurrentAccount({
-        USER_id: adminAccount.USER_id,
-        USER_role: 'admin',
-        USER_email: adminAccount.USER_email,
-        USER_linkedId: adminAccount.USER_linkedId,
-        USER_displayName: 'Admin',
-        USER_status: adminAccount.USER_status
+async function createCustomerFirebaseAccount(details) {
+    const credential = await createUserWithEmailAndPassword(firebaseAuth, details.email, details.password);
+    const uid = credential.user.uid;
+    const username = fullNameFromParts(details.firstName, details.lastName) || titleCaseName(details.email.split('@')[0]);
+
+    await firebaseSetDoc(firebaseUserDoc(uid), {
+        email: details.email,
+        username,
+        role: 'customer',
+        status: 'active',
+        createdAt: firebaseServerTimestamp()
     });
-    location.href = 'admin-dashboard.php';
+
+    await firebaseSetDoc(firebaseRoleDoc('customer', uid), {
+        firstName: details.firstName,
+        lastName: details.lastName,
+        phone: details.phone,
+        address: details.address,
+        profileImageUrl: '',
+        createdAt: firebaseServerTimestamp()
+    });
+
+    return syncCurrentAccountFromFirebase(credential.user);
+}
+
+async function createMerchantFirebaseAccount(details) {
+    const credential = await createUserWithEmailAndPassword(firebaseAuth, details.email, details.password);
+    const uid = credential.user.uid;
+    const username = fullNameFromParts(details.ownerFirstName, details.ownerLastName) || details.storeName;
+
+    await firebaseSetDoc(firebaseUserDoc(uid), {
+        email: details.email,
+        username,
+        role: 'merchant',
+        status: 'pending',
+        createdAt: firebaseServerTimestamp()
+    });
+
+    // TODO: Upload merchant logos/documents with Firebase Storage in a later phase.
+    await firebaseSetDoc(firebaseRoleDoc('seller', uid), {
+        storeName: details.storeName,
+        merchantType: details.merchantType,
+        address: details.address,
+        approvalStatus: 'pending',
+        storeStatus: 'closed',
+        availableDays: 'Monday, Tuesday, Wednesday, Thursday, Friday, Saturday',
+        logoUrl: '',
+        documentUrl: '',
+        createdAt: firebaseServerTimestamp()
+    });
+
+    return syncCurrentAccountFromFirebase(credential.user);
+}
+
+async function createRiderFirebaseAccount(details) {
+    const credential = await createUserWithEmailAndPassword(firebaseAuth, details.email, details.password);
+    const uid = credential.user.uid;
+    const fullName = fullNameFromParts(details.firstName, details.lastName);
+
+    await firebaseSetDoc(firebaseUserDoc(uid), {
+        email: details.email,
+        username: fullName,
+        role: 'rider',
+        status: 'pending',
+        createdAt: firebaseServerTimestamp()
+    });
+
+    // TODO: Upload rider profile, valid ID, and license files with Firebase Storage in a later phase.
+    await firebaseSetDoc(firebaseRoleDoc('rider', uid), {
+        fullName,
+        vehicleType: details.vehicleType,
+        currentLocation: details.currentLocation,
+        approvalStatus: 'pending',
+        profileImageUrl: '',
+        validIdUrl: '',
+        licenseUrl: '',
+        createdAt: firebaseServerTimestamp()
+    });
+
+    return syncCurrentAccountFromFirebase(credential.user);
 }
 
 async function requestPasswordReset(action, payload = {}) {
-    const response = await fetch(PASSWORD_RESET_URL, {
-        method: 'POST',
-        headers: {
-            Accept: 'application/json',
-            'Content-Type': 'application/json'
-        },
-        credentials: 'same-origin',
-        body: JSON.stringify({ action, ...payload })
-    });
-    const data = await response.json().catch(() => ({}));
-
-    if (!response.ok || data.ok === false) {
-        throw new Error(data.message || 'Password reset request failed.');
+    const email = String(payload.email || '').trim().toLowerCase();
+    if (!email) {
+        throw new Error('Enter your registered email first.');
     }
 
-    return data;
+    if (action === 'send_otp' || action === 'send_reset_link') {
+        await sendPasswordResetEmail(firebaseAuth, email);
+        return {
+            ok: true,
+            message: 'Password reset email sent. Please check your Gmail inbox.'
+        };
+    }
+
+    throw new Error('Password reset is handled through the Firebase reset email link.');
 }
 
 function passwordResetNotice(form) {
@@ -3007,7 +3894,7 @@ function setPasswordResetOtpStatus(status, message) {
 
     const text = status.querySelector('span:last-child');
     if (text) {
-        text.textContent = message || 'OTP sent to Gmail';
+        text.textContent = message || 'Password reset email sent to Gmail';
     }
     status.hidden = false;
 }
@@ -3161,17 +4048,21 @@ function initPasswordReset() {
                 }
                 form.dataset.passwordResetEmail = email;
                 form.dataset.passwordResetVerified = 'false';
-                setNotice(notice, 'Sending OTP...');
-                const result = await requestPasswordReset('send_otp', { email });
+                setNotice(notice, 'Sending password reset email...');
+                const result = await requestPasswordReset('send_reset_link', { email });
                 clearNotice(notice);
                 setPasswordResetOtpStatus(
                     otpStatus,
-                    result.message || 'OTP sent to Gmail'
+                    result.message || 'Password reset email sent to Gmail'
                 );
-                otpInput?.focus?.({ preventScroll: true });
+                const successTitle = $('[data-password-reset-success-title]', form);
+                if (successTitle) {
+                    successTitle.textContent = 'Password reset email sent';
+                }
+                showPasswordResetStep(form, 'success');
                 refreshIcons();
             } catch (error) {
-                setNotice(notice, error.message || 'OTP could not be sent.', true);
+                setNotice(notice, error.message || 'Password reset email could not be sent.', true);
             } finally {
                 sendOtpButton.disabled = false;
             }
@@ -3283,7 +4174,6 @@ function initLoginPage() {
                 const firstName = String(formData.get('firstName') || '').trim();
                 const lastName = String(formData.get('lastName') || '').trim();
                 const email = assertEmailAddress(form.elements.email);
-                const userId = userAccountDocId(email);
                 const phone = assertPhoneNumber(form.elements.phone);
                 const registeredAddress = readAddressPickerField(form, {
                     label: currentAddressLabel,
@@ -3293,53 +4183,29 @@ function initLoginPage() {
                 const address = registeredAddress.address;
                 const password = assertStrongPassword(form.elements.password);
                 assertMatchingPassword(password, form.elements.confirmPassword);
-                const existingRole = await findAccountRoleByEmail(email);
-                if (existingRole) {
-                    setNotice(notice, accountAlreadyExistsMessage(existingRole), true);
-                    return;
-                }
-
-                const customerId = await nextId(collections.customer);
-                await setDoc(docRef(collections.userAccount, userId), {
-                    USER_id: userId,
-                    USER_firstName: firstName,
-                    USER_lastName: lastName,
-                    USER_city: city,
-                    USER_email: email,
-                    USER_phone: phone,
-                    USER_password: password,
-                    USER_role: 'customer',
-                    USER_linkedId: customerId,
-                    USER_createdAt: serverTimestamp()
-                });
-
-                await setDoc(docRef(collections.customer, customerId), {
-                    CUST_id: customerId,
-                    CUST_firstName: firstName,
-                    CUST_lastName: lastName,
-                    CUST_email: email,
-                    CUST_phone: phone,
-                    CUST_city: city,
-                    CUST_address: address,
+                const account = await createCustomerFirebaseAccount({
+                    firstName,
+                    lastName,
+                    email,
+                    phone,
+                    city,
                     address,
-                    CUST_createdAt: serverTimestamp()
+                    password
                 });
 
                 saveCustomerAddresses(email, [{
                     ...registeredAddress,
-                    id: `${customerId}-default`,
+                    id: `${accountLinkedId(account)}-default`,
                     isDefault: true,
                     label: currentAddressLabel
                 }]);
                 removeLocal(storageKeys.lastOrderId);
-                setNotice(notice, 'Customer account created. Opening sign in...');
+                setNotice(notice, 'Customer account created. Opening dashboard...');
                 setTimeout(() => {
-                    if (!openAccountModal('signin')) {
-                        location.href = 'index.php?modal=signin';
-                    }
+                    location.href = dashboardForAccount(account);
                 }, 700);
             } catch (error) {
-                setNotice(notice, error.message || 'Customer sign up failed.', true);
+                setNotice(notice, firebaseAuthMessage(error) || 'Customer sign up failed.', true);
             }
         });
     });
@@ -3467,7 +4333,7 @@ function initStorefront() {
         }
 
         if (!openAccountModal('signin')) {
-            location.href = 'index.php?modal=signin';
+            location.href = 'index.html?modal=signin';
         }
     }
 
@@ -3506,7 +4372,7 @@ function initStorefront() {
         }
 
         if (screenName === 'stores') {
-            showHomeSection('stores', 'index.php?view=stores#stores');
+            showHomeSection('stores', 'index.html?view=stores#stores');
             return;
         }
 
@@ -3833,7 +4699,7 @@ function initStorefront() {
     }
 
     function customerStoreUrl(storeId) {
-        return `customer-dashboard.php?store=${encodeURIComponent(storeId)}#stores`;
+        return `customer-dashboard.html?store=${encodeURIComponent(storeId)}#stores`;
     }
 
     function renderStoreDirectories() {
@@ -3876,11 +4742,11 @@ function initStorefront() {
 
     function normalizeSellerProduct(product, merchant) {
         const merchantType = merchant.MERCH_type === 'Food' ? 'food' : 'grocery';
-        const productName = product.name || product.PROD_name || 'Merchant product';
+        const productName = productRecordName(product);
         const category = product.category || product.PROD_category || (merchant.MERCH_type === 'Food' ? 'Meals' : 'Merchant Items');
 
         return {
-            id: product.PROD_id || product.id || `${merchant.MERCH_id}-${slugify(productName)}`,
+            id: productRecordId(product) || `${merchant.MERCH_id}-${slugify(productName)}`,
             type: product.type || merchantType,
             category,
             name: productName,
@@ -3890,7 +4756,7 @@ function initStorefront() {
             tag: product.tag || 'Merchant',
             rating: product.rating || '4.6',
             unit: product.unit || product.PROD_unit || '1 item',
-            image: productImagePath(product.image || product.PROD_image),
+            image: productImagePath(productRecordImageUrl(product)),
             alt: product.alt || productName,
             description: product.description || product.PROD_description || ''
         };
@@ -3911,10 +4777,7 @@ function initStorefront() {
 
                 const products = sellerProducts
                     .filter((product) => {
-                        const productMerchantId = product.MERCH_id || product.merchantId;
-                        const isSellerDashboardProduct = product.source === 'seller-dashboard' || product.merchantId === merchantId;
-                        const isActive = !product.approvalStatus || product.approvalStatus === 'Active';
-                        return productMerchantId === merchantId && isSellerDashboardProduct && isActive;
+                        return productRecordMerchantId(product) === merchantId && productIsActive(product);
                     })
                     .map((product) => normalizeSellerProduct(product, merchant));
 
@@ -3956,15 +4819,15 @@ function initStorefront() {
     }
 
     function listenSellerCatalogs() {
-        listenCollection(collections.merchant, (records) => {
+        listenFirestoreMerchants((records) => {
             sellerMerchants = records;
             rebuildSellerStores();
-        }, 300);
+        });
 
-        listenCollection(collections.products, (records) => {
+        listenFirestoreProducts((records) => {
             sellerProducts = records;
             rebuildSellerStores();
-        }, 500);
+        });
     }
 
     function selectStore(storeId, updateHash = true) {
@@ -4039,7 +4902,7 @@ function initStorefront() {
         setNotice(signupNotice, 'Please create an account or sign in to add items to your cart.');
 
         if (!opened) {
-            location.href = 'index.php?modal=signup';
+            location.href = 'index.html?modal=signup';
         }
     }
 
@@ -4519,10 +5382,15 @@ function initCustomerStarRatings(root = document) {
     });
 }
 
-function customerOrderRatingFormHtml(order) {
+function customerOrderRatingFormHtml(order, existingRating = null) {
     const orderId = customerOrderNumber(order);
+    const ratingId = existingRating?.id || existingRating?.ratingId || '';
+    const serviceScore = Number(existingRating?.serviceScore ?? existingRating?.RATE_serviceScore ?? 0) || 0;
+    const shopperScore = Number(existingRating?.shopperScore ?? existingRating?.RATE_shopperScore ?? 0) || 0;
+    const comment = existingRating?.comment || existingRating?.RATE_feedbackComment || '';
+    const savedNote = ratingId ? '<p class="customer-feedback-saved-note"><i data-lucide="check-circle" aria-hidden="true"></i> You already rated this order. Click Edit Rating to update it.</p>' : '';
     return `
-        <form class="customer-order-action-panel customer-order-modal-form" data-customer-order-rating-form>
+        <form class="customer-order-action-panel customer-order-modal-form" data-customer-order-rating-form data-customer-order-rating-id="${escapeHtml(ratingId)}">
             <div class="customer-order-form-head">
                 <div>
                     <h3>Rate Order</h3>
@@ -4531,18 +5399,19 @@ function customerOrderRatingFormHtml(order) {
                 <strong>${escapeHtml(orderStatus(order))}</strong>
             </div>
             <input type="hidden" name="order" value="${escapeHtml(orderId)}">
+            ${savedNote}
             <div class="customer-rating-fields">
                 <fieldset class="customer-rating-field">
                     <legend>Service quality</legend>
-                    ${customerRatingScaleHtml('serviceScore')}
+                    ${customerRatingScaleHtml('serviceScore', serviceScore)}
                 </fieldset>
                 <fieldset class="customer-rating-field">
                     <legend>Rider experience</legend>
-                    ${customerRatingScaleHtml('shopperScore')}
+                    ${customerRatingScaleHtml('shopperScore', shopperScore)}
                 </fieldset>
                 <label class="customer-order-textarea">
                     Feedback comment
-                    <textarea name="comment" placeholder="Optional"></textarea>
+                    <textarea name="comment" placeholder="Optional">${escapeHtml(comment)}</textarea>
                 </label>
             </div>
             <div class="customer-order-form-actions">
@@ -4554,9 +5423,21 @@ function customerOrderRatingFormHtml(order) {
     `;
 }
 
-function customerOrderRefundFormHtml(order) {
+function customerOrderRefundFormHtml(order, existingRefunds = []) {
     const orderId = customerOrderNumber(order);
     const total = Number(orderTotal(order) || 0);
+    const refundList = existingRefunds.length > 0
+        ? `<div class="customer-existing-feedback-list">
+            <strong>Previous refund requests</strong>
+            ${existingRefunds.map((refund) => `
+                <div class="customer-existing-feedback-item">
+                    <span>${escapeHtml(refund.status || refund.REFUND_status || 'Pending')}</span>
+                    <p>${escapeHtml(refund.reason || refund.REFUND_reason || 'No reason provided.')}</p>
+                    <small>${formatMoney(refund.amount || refund.REFUND_amount || 0)}</small>
+                </div>
+            `).join('')}
+        </div>`
+        : '';
     return `
         <form class="customer-order-action-panel customer-order-modal-form" data-customer-order-refund-form>
             <div class="customer-order-form-head">
@@ -4567,6 +5448,7 @@ function customerOrderRefundFormHtml(order) {
                 <strong>${formatMoney(total)}</strong>
             </div>
             <input type="hidden" name="order" value="${escapeHtml(orderId)}">
+            ${refundList}
             <div class="customer-refund-fields">
                 <label class="customer-order-input">
                     Refund amount
@@ -4814,7 +5696,7 @@ function sellerOrderModalTemplate(order, items = [], options = {}) {
 }
 
 function orderStatus(order) {
-    return order?.order_status || order?.ORDER_status || 'Placed';
+    return order?.orderStatus || order?.order_status || order?.ORDER_status || 'Placed';
 }
 
 function orderTotal(order) {
@@ -5022,7 +5904,9 @@ function removeInlineConfirms(scope, selector = '.inline-confirm') {
 function rejectedByRider(order, shopperId) {
     const rejectedBy = Array.isArray(order?.rider_rejected_by)
         ? order.rider_rejected_by
-        : [order?.rider_rejected_by].filter(Boolean);
+        : Array.isArray(order?.riderRejectedBy)
+            ? order.riderRejectedBy
+            : [order?.rider_rejected_by || order?.riderRejectedBy].filter(Boolean);
 
     return Boolean(shopperId && rejectedBy.includes(shopperId));
 }
@@ -5069,38 +5953,56 @@ async function saveOrderRating({
     shopperScore = 5,
     comment = ''
 }) {
+    if (!orderId) {
+        throw new Error('Order ID is required before saving a rating.');
+    }
+    if (!customerId) {
+        throw new Error('Please sign in before rating this order.');
+    }
+
     const normalizedServiceScore = Number(serviceScore) || 5;
     const normalizedShopperScore = Number(shopperScore) || 5;
+    const existingRating = ratingId ? null : await readCustomerRatingForOrder(orderId, customerId).catch(() => null);
+    const targetRef = ratingId
+        ? firestoreRatingDoc(ratingId)
+        : existingRating?.id
+            ? firestoreRatingDoc(existingRating.id)
+            : firestoreAutoDoc('ratings');
+    const targetId = ratingId || existingRating?.id || targetRef.id;
+    const timestamp = firebaseServerTimestamp();
 
     const ratingPayload = {
+        ratingId: targetId,
+        orderId,
+        customerId,
+        riderId: shopperId,
+        serviceScore: normalizedServiceScore,
+        shopperScore: normalizedShopperScore,
+        comment,
+        status: 'Active',
+        updatedAt: timestamp,
+        // Legacy-compatible fields used by the existing honestbee UI.
+        RATE_id: targetId,
         ORDER_id: orderId,
         CUST_id: customerId,
         SHOP_id: shopperId,
         RATE_serviceScore: normalizedServiceScore,
         RATE_shopperScore: normalizedShopperScore,
         RATE_feedbackComment: comment,
-        RATE_date: serverTimestamp(),
+        RATE_date: timestamp,
         order_id: orderId,
         customer_id: customerId,
-        serviceScore: normalizedServiceScore,
-        shopperScore: normalizedShopperScore,
-        comment
+        shopper_id: shopperId
     };
 
-    if (ratingId) {
-        await updateDoc(docRef(collections.rating, ratingId), {
-            ...ratingPayload,
-            updatedAt: serverTimestamp()
-        });
-        return {
-            id: ratingId
-        };
+    if (!ratingId && !existingRating) {
+        ratingPayload.createdAt = timestamp;
     }
 
-    return addDoc(collectionRef(collections.rating), {
-        ...ratingPayload,
-        createdAt: serverTimestamp()
-    });
+    await firebaseSetDoc(targetRef, ratingPayload, { merge: true });
+    return {
+        id: targetId
+    };
 }
 
 async function saveOrderRefund({
@@ -5109,20 +6011,42 @@ async function saveOrderRefund({
     amount = 0,
     reason = ''
 }) {
-    await addDoc(collectionRef(collections.refund), {
-        ORDER_id: orderId,
-        CUST_id: customerId,
-        REFUND_amount: Number(amount) || 0,
-        REFUND_reason: reason,
-        REFUND_status: 'Pending',
-        REFUND_date: serverTimestamp(),
-        order_id: orderId,
-        customer_id: customerId,
-        amount: Number(amount) || 0,
+    if (!orderId) {
+        throw new Error('Order ID is required before requesting a refund.');
+    }
+    if (!customerId) {
+        throw new Error('Please sign in before requesting a refund.');
+    }
+
+    const refundRef = firestoreAutoDoc('refunds');
+    const refundId = refundRef.id;
+    const timestamp = firebaseServerTimestamp();
+    const normalizedAmount = Number(amount) || 0;
+
+    await firebaseSetDoc(refundRef, {
+        refundId,
+        orderId,
+        customerId,
+        amount: normalizedAmount,
         reason,
         status: 'Pending',
-        createdAt: serverTimestamp()
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        // Legacy-compatible fields used by the existing honestbee UI.
+        REFUND_id: refundId,
+        ORDER_id: orderId,
+        CUST_id: customerId,
+        REFUND_amount: normalizedAmount,
+        REFUND_reason: reason,
+        REFUND_status: 'Pending',
+        REFUND_date: timestamp,
+        order_id: orderId,
+        customer_id: customerId
     });
+
+    return {
+        id: refundId
+    };
 }
 
 function initCustomerDashboard() {
@@ -5137,9 +6061,7 @@ function initCustomerDashboard() {
     }
 
     const email = accountEmail(account);
-    const customerId = isCustomerRecordId(accountLinkedId(account))
-        ? accountLinkedId(account)
-        : customerDocId(email);
+    const customerId = accountLinkedId(account) || account?.USER_id || customerDocId(email);
     const orderLists = $$('[data-customer-orders]', root);
     const activeOrderNodes = $$('[data-customer-active-order]', root);
     const customerCart = new Map();
@@ -5253,6 +6175,7 @@ function initCustomerDashboard() {
     };
 
     const customerCartStorageKey = () => (email ? `${storageKeys.cart}_${email}` : storageKeys.cart);
+    const customerCartItemDoc = (productId) => firestoreCartItemDoc(customerId, productId);
 
     const customerCartItemCount = () => [...customerCart.values()]
         .reduce((sum, item) => sum + (Number(item.quantity) || 0), 0);
@@ -5271,29 +6194,124 @@ function initCustomerDashboard() {
         };
     };
 
+    const cartFirestorePayload = (item) => ({
+        productId: item.id || item.productId,
+        merchantId: item.merchantId || '',
+        productName: item.name || item.productName || 'Product',
+        name: item.name || item.productName || 'Product',
+        merchantName: item.merchant || item.merchantName || 'honestbee Partner',
+        merchant: item.merchant || item.merchantName || 'honestbee Partner',
+        category: item.category || 'Products',
+        unit: item.unit || '1 item',
+        price: Number(item.price) || 0,
+        quantity: Math.max(1, Number(item.quantity) || 1),
+        imageUrl: item.image || item.imageUrl || DEFAULT_PRODUCT_IMAGE,
+        image: item.image || item.imageUrl || DEFAULT_PRODUCT_IMAGE,
+        subtotal: (Number(item.price) || 0) * (Math.max(1, Number(item.quantity) || 1)),
+        instructions: item.instructions || '',
+        substitutePolicy: item.substitutePolicy || 'suggest',
+        substituteName: item.substituteName || '',
+        updatedAt: firebaseServerTimestamp()
+    });
+
+    const saveCustomerCartItem = async (item) => {
+        if (!customerId || !item?.id) {
+            return;
+        }
+
+        await firebaseSetDoc(firestoreCartDoc(customerId), {
+            customerId,
+            customerEmail: email,
+            updatedAt: firebaseServerTimestamp()
+        }, { merge: true });
+        await firebaseSetDoc(customerCartItemDoc(item.id), cartFirestorePayload(item), { merge: true });
+    };
+
+    const deleteCustomerCartItem = async (productId) => {
+        if (!customerId || !productId) {
+            return;
+        }
+
+        await firebaseDeleteDoc(customerCartItemDoc(productId));
+        await firebaseSetDoc(firestoreCartDoc(customerId), {
+            customerId,
+            customerEmail: email,
+            updatedAt: firebaseServerTimestamp()
+        }, { merge: true });
+    };
+
+    const clearCustomerCartItems = async () => {
+        if (!customerId) {
+            return;
+        }
+
+        const snapshot = await firebaseGetDocs(firestoreCartItemsCollection(customerId));
+        await Promise.all(snapshot.docs.map((itemSnapshot) => firebaseDeleteDoc(itemSnapshot.ref)));
+        await firebaseSetDoc(firestoreCartDoc(customerId), {
+            customerId,
+            customerEmail: email,
+            updatedAt: firebaseServerTimestamp(),
+            clearedAt: firebaseServerTimestamp()
+        }, { merge: true });
+    };
+
     const saveCustomerCart = () => {
-        saveLocal(customerCartStorageKey(), JSON.stringify([...customerCart.values()]));
+        // Firestore cart writes are handled per item in Phase 3.
+    };
+
+    const migrateLocalCustomerCartToFirestore = async () => {
+        const localKey = customerCartStorageKey();
+        const raw = readLocal(localKey);
+        if (!raw) {
+            return;
+        }
+
+        try {
+            const localItems = JSON.parse(raw || '[]');
+            if (Array.isArray(localItems) && localItems.length > 0) {
+                await Promise.all(localItems.map((item) => {
+                    const normalized = normalizeFirestoreCartItem({
+                        ...item,
+                        productId: item.id || item.productId
+                    });
+                    customerCart.set(normalized.id, normalized);
+                    return saveCustomerCartItem(normalized);
+                }));
+            }
+            removeLocal(localKey);
+        } catch (error) {
+            removeLocal(localKey);
+        }
     };
 
     const loadCustomerCart = () => {
-        customerCart.clear();
-
-        try {
-            JSON.parse(readLocal(customerCartStorageKey()) || '[]').forEach((item) => {
-                if (!item?.id) {
-                    return;
-                }
-
-                customerCart.set(item.id, {
-                    ...item,
-                    price: Number(item.price) || 0,
-                    quantity: Math.max(1, Number(item.quantity) || 1),
-                    image: productImagePath(item.image)
-                });
-            });
-        } catch (error) {
-            removeLocal(customerCartStorageKey());
+        if (!customerId) {
+            customerCart.clear();
+            renderCustomerCart();
+            return;
         }
+
+        firebaseOnSnapshot(
+            firestoreCartItemsCollection(customerId),
+            (snapshot) => {
+                customerCart.clear();
+                snapshot.docs.forEach((documentSnapshot) => {
+                    const item = normalizeFirestoreCartItem({
+                        id: documentSnapshot.id,
+                        ...documentSnapshot.data()
+                    });
+                    if (item.id) {
+                        customerCart.set(item.id, item);
+                    }
+                });
+                renderCustomerCart();
+            },
+            (error) => {
+                console.error('Firestore cart listener failed', error);
+                setNotice(customerCartNotice, 'Cart could not be loaded.', true);
+            }
+        );
+        migrateLocalCustomerCartToFirestore().catch((error) => console.error('Cart migration failed', error));
     };
 
     const customerStoreForProduct = (product = {}) => {
@@ -5406,7 +6424,8 @@ function initCustomerDashboard() {
 
         customerGcashInputs.forEach((input) => {
             input.disabled = !shouldShowGcashFields;
-            input.required = shouldShowGcashFields;
+            // Firebase Storage is not enabled in Phase 3, so proof upload stays optional for now.
+            input.required = shouldShowGcashFields && input.name !== 'gcashProof';
 
             if (!shouldShowGcashFields) {
                 input.value = '';
@@ -5498,25 +6517,32 @@ function initCustomerDashboard() {
         instructions: ''
     });
 
-    const addCustomerCartItem = (product, quantity = 1) => {
+    const addCustomerCartItem = async (product, quantity = 1) => {
         if (!product?.id) {
             return;
         }
 
         const existing = customerCart.get(product.id);
-        if (existing) {
-            existing.quantity += quantity;
-            existing.instructions = product.instructions || existing.instructions;
-        } else {
-            customerCart.set(product.id, {
+        const nextItem = existing
+            ? {
+                ...existing,
+                quantity: (Number(existing.quantity) || 1) + quantity,
+                instructions: product.instructions || existing.instructions
+            }
+            : {
                 ...product,
                 quantity
-            });
-        }
+            };
 
+        customerCart.set(product.id, nextItem);
         resetCustomerCheckoutSuccess();
-        saveCustomerCart();
         renderCustomerCart();
+        try {
+            await saveCustomerCartItem(nextItem);
+            setNotice(customerCartNotice, 'Item added to cart.');
+        } catch (error) {
+            setNotice(customerCartNotice, error.message || 'Cart item could not be saved.', true);
+        }
     };
 
     const refreshCustomerProductModal = () => {
@@ -5580,14 +6606,7 @@ function initCustomerDashboard() {
         currentCustomerModalQuantity = 1;
     };
 
-    const readCustomerOrderItems = async (orderId) => {
-        if (!orderId) {
-            return [];
-        }
-
-        return (await readCollection(collections.orderItem, 1000))
-            .filter((item) => item.order_id === orderId || item.ORDER_id === orderId);
-    };
+    const readCustomerOrderItems = async (orderId) => readFirestoreOrderItems(orderId);
 
     const findCustomerOrderForModal = async (orderId) => {
         const localOrder = customerDashboardOrders.find((order) => (
@@ -5600,19 +6619,11 @@ function initCustomerDashboard() {
             return localOrder;
         }
 
-        const snapshot = await getDoc(docRef(collections.customerOrder, orderId));
-        if (!snapshot.exists()) {
-            return null;
-        }
-
-        const order = {
-            id: snapshot.id,
-            ...snapshot.data()
-        };
-        return order.customer_id === customerId || order.customer_email === email ? order : null;
+        const order = await readFirestoreOrder(orderId);
+        return order && (order.customerId === customerId || order.customer_id === customerId || order.customer_email === email) ? order : null;
     };
 
-    const setCustomerOrderModalAction = (action) => {
+    const setCustomerOrderModalAction = async (action) => {
         if (!currentCustomerOrder || !customerOrderModalContent) {
             return;
         }
@@ -5632,10 +6643,27 @@ function initCustomerDashboard() {
             });
 
         if (nextAction === 'rate') {
-            workspace.innerHTML = customerOrderRatingFormHtml(currentCustomerOrder);
-            initCustomerStarRatings(workspace);
+            workspace.innerHTML = '<div class="empty-state">Loading rating details...</div>';
+            try {
+                const existingRating = await readCustomerRatingForOrder(customerOrderNumber(currentCustomerOrder), customerId);
+                workspace.innerHTML = customerOrderRatingFormHtml(currentCustomerOrder, existingRating);
+                initCustomerStarRatings(workspace);
+                const form = $('[data-customer-order-rating-form]', workspace);
+                if (form && existingRating?.id) {
+                    form.dataset.customerOrderRatingId = existingRating.id;
+                    setCustomerRatingFormLocked(form, true);
+                }
+            } catch (error) {
+                workspace.innerHTML = '<div class="empty-state">Rating details could not be loaded.</div>';
+            }
         } else if (nextAction === 'refund') {
-            workspace.innerHTML = customerOrderRefundFormHtml(currentCustomerOrder);
+            workspace.innerHTML = '<div class="empty-state">Loading refund requests...</div>';
+            try {
+                const existingRefunds = await readCustomerRefundsForOrder(customerOrderNumber(currentCustomerOrder), customerId);
+                workspace.innerHTML = customerOrderRefundFormHtml(currentCustomerOrder, existingRefunds);
+            } catch (error) {
+                workspace.innerHTML = customerOrderRefundFormHtml(currentCustomerOrder, []);
+            }
         } else {
             workspace.innerHTML = '';
         }
@@ -5697,7 +6725,7 @@ function initCustomerDashboard() {
         refreshCustomerProductModal();
     };
 
-    const confirmCustomerProductModalAdd = () => {
+    const confirmCustomerProductModalAdd = async () => {
         if (!currentCustomerModalProduct) {
             return;
         }
@@ -5708,14 +6736,14 @@ function initCustomerDashboard() {
             return;
         }
 
-        addCustomerCartItem({
+        await addCustomerCartItem({
             ...currentCustomerModalProduct,
             instructions: String(customerProductModalInstructions?.value || '').trim()
         }, currentCustomerModalQuantity);
         closeCustomerProductModal();
     };
 
-    const updateCustomerCartQuantity = (productId, change) => {
+    const updateCustomerCartQuantity = async (productId, change) => {
         const item = customerCart.get(productId);
         if (!item) {
             return;
@@ -5729,19 +6757,35 @@ function initCustomerDashboard() {
             }
         }
 
-        item.quantity += change;
-        if (item.quantity <= 0) {
+        const nextQuantity = (Number(item.quantity) || 1) + change;
+        if (nextQuantity <= 0) {
             customerCart.delete(productId);
+            renderCustomerCart();
+            await deleteCustomerCartItem(productId);
+            return;
         }
 
-        saveCustomerCart();
+        const nextItem = {
+            ...item,
+            quantity: nextQuantity
+        };
+        customerCart.set(productId, nextItem);
         renderCustomerCart();
+        try {
+            await saveCustomerCartItem(nextItem);
+        } catch (error) {
+            setNotice(customerCartNotice, error.message || 'Cart quantity could not be saved.', true);
+        }
     };
 
-    const removeCustomerCartItem = (productId) => {
+    const removeCustomerCartItem = async (productId) => {
         customerCart.delete(productId);
-        saveCustomerCart();
         renderCustomerCart();
+        try {
+            await deleteCustomerCartItem(productId);
+        } catch (error) {
+            setNotice(customerCartNotice, error.message || 'Cart item could not be removed.', true);
+        }
     };
 
     const prepareCustomerCheckoutPayload = (form) => {
@@ -5833,14 +6877,11 @@ function initCustomerDashboard() {
             const checkoutPayload = {
                 ...customerCheckoutPendingPayload
             };
-            if (isGcashPaymentMethod(checkoutPayload.payment_method) && checkoutPayload.gcash_details?.proofInput) {
-                setNotice(customerCartNotice, 'Uploading proof of payment...');
-                checkoutPayload.gcash_details = await uploadGcashPaymentProof(checkoutPayload.gcash_details);
-            }
+            // TODO: Add Firebase Storage later for proof uploads. Phase 3 saves GCash reference only.
 
             const result = await saveCustomerOrder(checkoutPayload);
+            await clearCustomerCartItems();
             customerCart.clear();
-            saveCustomerCart();
             renderCustomerCart();
             customerCheckoutForm?.reset();
             fillCustomerCheckoutProfile();
@@ -6039,10 +7080,10 @@ function initCustomerDashboard() {
     const normalizeCustomerSellerProduct = (product, merchant) => {
         const merchantId = merchant.MERCH_id || merchant.id || '';
         const merchantType = merchant.MERCH_type === 'Food' ? 'food' : 'grocery';
-        const productName = product.name || product.PROD_name || 'Merchant product';
+        const productName = productRecordName(product);
 
         return {
-            id: product.PROD_id || product.id || `${merchantId}-${slugify(productName)}`,
+            id: productRecordId(product) || `${merchantId}-${slugify(productName)}`,
             type: product.type || product.PROD_type || merchantType,
             category: product.category || product.PROD_category || (merchant.MERCH_type === 'Food' ? 'Meals' : 'Merchant Items'),
             name: productName,
@@ -6052,7 +7093,7 @@ function initCustomerDashboard() {
             tag: product.tag || product.PROD_tag || 'Merchant',
             rating: product.rating || product.PROD_rating || '4.6',
             unit: product.unit || product.PROD_unit || '1 item',
-            image: productImagePath(product.image || product.PROD_image),
+            image: productImagePath(productRecordImageUrl(product)),
             alt: product.alt || product.PROD_alt || productName,
             description: product.description || product.PROD_description || ''
         };
@@ -6072,12 +7113,7 @@ function initCustomerDashboard() {
 
                 const products = customerSellerProducts
                     .filter((product) => {
-                        const productMerchantId = customerProductMerchantId(product);
-                        const productSource = product.source || product.PROD_source || '';
-                        const productStatus = product.approvalStatus || product.PROD_approvalStatus || '';
-                        const isSellerProduct = productSource === 'seller-dashboard' || productMerchantId === merchantId;
-                        const isActive = !productStatus || productStatus === 'Active';
-                        return productMerchantId === merchantId && isSellerProduct && isActive;
+                        return customerProductMerchantId(product) === merchantId && productIsActive(product);
                     })
                     .map((product) => normalizeCustomerSellerProduct(product, merchant));
 
@@ -6112,15 +7148,15 @@ function initCustomerDashboard() {
     };
 
     const listenCustomerSellerCatalogs = () => {
-        listenCollection(collections.merchant, (records) => {
+        listenFirestoreMerchants((records) => {
             customerSellerMerchants = records;
             rebuildCustomerSellerStores();
-        }, 500);
+        });
 
-        listenCollection(collections.products, (records) => {
+        listenFirestoreProducts((records) => {
             customerSellerProducts = records;
             rebuildCustomerSellerStores();
-        }, 1000);
+        });
     };
 
     const openCustomerStore = (storeId) => {
@@ -6183,7 +7219,7 @@ function initCustomerDashboard() {
     }
     listenCustomerSellerCatalogs();
 
-    listenCollection(collections.customerOrder, (orders, error) => {
+    listenFirestoreOrdersForCustomer(customerId, email, (orders, error) => {
         if (error) {
             customerDashboardOrders = [];
             orderLists.forEach((orderList) => {
@@ -6196,9 +7232,7 @@ function initCustomerDashboard() {
             return;
         }
 
-        const customerOrders = orders
-            .filter((order) => order.customer_id === customerId || order.customer_email === email)
-            .sort((a, b) => String(b.id).localeCompare(String(a.id)));
+        const customerOrders = orders;
         customerDashboardOrders = customerOrders;
 
         if (customerOrders.length === 0) {
@@ -6257,7 +7291,7 @@ function initCustomerDashboard() {
         const customerOrderModalAction = event.target.closest('[data-customer-order-modal-action]');
         if (customerOrderModalAction && root.contains(customerOrderModalAction)) {
             event.preventDefault();
-            setCustomerOrderModalAction(customerOrderModalAction.dataset.customerOrderModalAction || '');
+            await setCustomerOrderModalAction(customerOrderModalAction.dataset.customerOrderModalAction || '');
             return;
         }
 
@@ -6337,28 +7371,28 @@ function initCustomerDashboard() {
 
         if (event.target.closest('[data-customer-product-modal-add]')) {
             event.preventDefault();
-            confirmCustomerProductModalAdd();
+            await confirmCustomerProductModalAdd();
             return;
         }
 
         const customerCartIncrease = event.target.closest('[data-customer-cart-increase]');
         if (customerCartIncrease && root.contains(customerCartIncrease)) {
             event.preventDefault();
-            updateCustomerCartQuantity(customerCartIncrease.dataset.customerCartIncrease, 1);
+            await updateCustomerCartQuantity(customerCartIncrease.dataset.customerCartIncrease, 1);
             return;
         }
 
         const customerCartDecrease = event.target.closest('[data-customer-cart-decrease]');
         if (customerCartDecrease && root.contains(customerCartDecrease)) {
             event.preventDefault();
-            updateCustomerCartQuantity(customerCartDecrease.dataset.customerCartDecrease, -1);
+            await updateCustomerCartQuantity(customerCartDecrease.dataset.customerCartDecrease, -1);
             return;
         }
 
         const customerCartRemove = event.target.closest('[data-customer-cart-remove]');
         if (customerCartRemove && root.contains(customerCartRemove)) {
             event.preventDefault();
-            removeCustomerCartItem(customerCartRemove.dataset.customerCartRemove);
+            await removeCustomerCartItem(customerCartRemove.dataset.customerCartRemove);
             return;
         }
 
@@ -6555,36 +7589,21 @@ function initRiderApplication() {
                 const riderAddress = readAddressPickerField(form, {
                     label: currentAddressLabel
                 });
-                const existingRole = await findAccountRoleByEmail(email);
-                if (existingRole) {
-                    setNotice(notice, accountAlreadyExistsMessage(existingRole), true);
-                    return;
-                }
-
-                const validIdPath = await uploadImageInput(form.elements.validId, 'rider-id', 'Valid ID / Driver\'s License');
-                const shopperId = await nextId(collections.shopper);
-                await setDoc(docRef(collections.shopper, shopperId), {
-                    SHOP_id: shopperId,
-                    SHOP_firstName: firstName,
-                    SHOP_lastName: lastName,
-                    SHOP_email: email,
-                    SHOP_password: password,
-                    SHOP_phone: phone,
-                    SHOP_currentLocation: riderAddress.address,
-                    SHOP_vehicleType: formData.get('vehicleType'),
-                    SHOP_validId: validIdPath,
-                    SHOP_availabilityStatus: 'Unavailable',
-                    SHOP_employmentStatus: 'Pending',
-                    SHOP_createdAt: serverTimestamp(),
-                    role: 'rider'
+                const account = await createRiderFirebaseAccount({
+                    firstName,
+                    lastName,
+                    email,
+                    phone,
+                    password,
+                    vehicleType: formData.get('vehicleType'),
+                    currentLocation: riderAddress.address
                 });
 
-                saveLocal(storageKeys.shopperId, shopperId);
-                saveLocal(storageKeys.riderApplication, shopperId);
+                saveRoleStorageForAccount(account);
                 setNotice(notice, pendingApprovalMessage);
-                setTimeout(redirectToPendingApproval, 500);
+                setTimeout(() => redirectToWaiting('rider', accountLinkedId(account)), 500);
             } catch (error) {
-                setNotice(notice, error.message || 'Rider application could not be saved.', true);
+                setNotice(notice, firebaseAuthMessage(error) || 'Rider application could not be saved.', true);
             }
         });
     });
@@ -6605,93 +7624,96 @@ function nextRiderStatus(status) {
 }
 
 async function updateOrderStatus(order, status, shopperId = orderAssignedShopperId(order), paymentStatus = null) {
+    const orderId = order?.id || order?.orderId || order?.order_id || order?.ORDER_id;
+    if (!orderId) {
+        return;
+    }
+
     const payload = {
-        ORDER_status: status,
+        orderStatus: status,
         order_status: status,
-        SHOP_id: shopperId,
-        shopper_id: shopperId,
-        updatedAt: serverTimestamp()
+        ORDER_status: status,
+        riderId: shopperId || '',
+        rider_id: shopperId || '',
+        SHOP_id: shopperId || '',
+        shopper_id: shopperId || '',
+        deliveryStatus: status,
+        delivery_status: status,
+        lastRiderAction: status,
+        last_rider_action: status,
+        lastRiderActionAt: firebaseServerTimestamp(),
+        last_rider_action_at: firebaseServerTimestamp(),
+        updatedAt: firebaseServerTimestamp()
     };
 
     if (paymentStatus) {
-        payload.PAY_status = paymentStatus;
-        payload.payment_status = paymentStatus;
         payload.paymentStatus = paymentStatus;
+        payload.payment_status = paymentStatus;
+        payload.PAY_status = paymentStatus;
     }
 
-    await updateDoc(docRef(collections.customerOrder, order.id), payload);
-    await setDoc(docRef(collections.orders, order.id), payload, { merge: true });
-
-    if (paymentStatus) {
-        await setDoc(docRef(collections.paymentTransaction, order.id), {
-            PAY_status: paymentStatus,
-            status: paymentStatus,
-            updatedAt: serverTimestamp()
-        }, { merge: true });
-    }
-
-    if (order.delivery_id || order.DELIVERY_id) {
-        await setDoc(docRef(collections.delivery, order.delivery_id || order.DELIVERY_id), {
-            DELIVERY_status: status,
-            status,
-            updatedAt: serverTimestamp()
-        }, { merge: true });
-    }
+    await firebaseSetDoc(firestoreOrderDoc(orderId), payload, { merge: true });
 }
 
 async function updateSellerPaymentVerification(order, merchantId, isPaid) {
+    const orderId = order?.id || order?.orderId || order?.order_id || order?.ORDER_id;
+    if (!orderId) {
+        return;
+    }
+
     const paymentStatus = isPaid ? 'Paid' : 'Unpaid';
     const verificationStatus = isPaid ? 'Verified by merchant' : 'Merchant marked unpaid';
     const storeAcceptanceStatus = isPaid ? 'Accepted' : 'Payment not verified';
     const payload = {
-        PAY_status: paymentStatus,
-        payment_status: paymentStatus,
         paymentStatus,
+        payment_status: paymentStatus,
+        PAY_status: paymentStatus,
+        storeAcceptanceStatus,
         store_acceptance_status: storeAcceptanceStatus,
         STORE_acceptanceStatus: storeAcceptanceStatus,
+        requiresSellerPaymentVerification: !isPaid,
         requires_seller_payment_verification: !isPaid,
+        sellerPaymentVerified: isPaid,
         seller_payment_verified: isPaid,
+        paymentVerificationStatus: verificationStatus,
         payment_verification_status: verificationStatus,
+        paymentVerifiedBy: merchantId,
         payment_verified_by: merchantId,
-        payment_verified_at: serverTimestamp(),
-        updatedAt: serverTimestamp()
+        paymentVerifiedAt: firebaseServerTimestamp(),
+        payment_verified_at: firebaseServerTimestamp(),
+        updatedAt: firebaseServerTimestamp()
     };
 
-    await updateDoc(docRef(collections.customerOrder, order.id), payload);
-    await setDoc(docRef(collections.orders, order.id), payload, { merge: true });
-    await setDoc(docRef(collections.paymentTransaction, order.id), {
-        PAY_status: paymentStatus,
-        PAY_verificationStatus: verificationStatus,
-        PAY_verifiedBy: merchantId,
-        PAY_verifiedAt: serverTimestamp(),
-        status: paymentStatus,
-        verification_status: verificationStatus,
-        verified_by: merchantId,
-        verified_at: serverTimestamp(),
-        updatedAt: serverTimestamp()
-    }, { merge: true });
+    await firebaseSetDoc(firestoreOrderDoc(orderId), payload, { merge: true });
 }
 
 async function rejectOrderForRider(order, shopperId) {
+    const orderId = order?.id || order?.orderId || order?.order_id || order?.ORDER_id;
+    if (!orderId || !shopperId) {
+        return;
+    }
+
+    const rejectedBy = Array.isArray(order?.rider_rejected_by)
+        ? order.rider_rejected_by
+        : Array.isArray(order?.riderRejectedBy)
+            ? order.riderRejectedBy
+            : [order?.rider_rejected_by || order?.riderRejectedBy].filter(Boolean);
+    const updatedRejectedBy = [...new Set([...rejectedBy, shopperId])];
     const payload = {
-        rider_rejected_by: arrayUnion(shopperId),
+        riderRejectedBy: updatedRejectedBy,
+        rider_rejected_by: updatedRejectedBy,
+        lastRiderId: shopperId,
         last_rider_id: shopperId,
+        lastRiderAction: 'Rejected',
         last_rider_action: 'Rejected',
-        ORDER_status: 'Rejected',
-        order_status: 'Rejected',
-        updatedAt: serverTimestamp()
+        lastRiderActionAt: firebaseServerTimestamp(),
+        last_rider_action_at: firebaseServerTimestamp(),
+        updatedAt: firebaseServerTimestamp()
     };
 
-    await updateDoc(docRef(collections.customerOrder, order.id), payload);
-    await setDoc(docRef(collections.orders, order.id), payload, { merge: true });
-
-    if (order.delivery_id || order.DELIVERY_id) {
-        await setDoc(docRef(collections.delivery, order.delivery_id || order.DELIVERY_id), {
-            DELIVERY_status: 'Rejected',
-            status: 'Rejected',
-            updatedAt: serverTimestamp()
-        }, { merge: true });
-    }
+    // Rider rejection should only hide the delivery from this rider.
+    // The order remains available for other riders and visible to customer/merchant/admin.
+    await firebaseSetDoc(firestoreOrderDoc(orderId), payload, { merge: true });
 }
 
 function showRiderPaymentPrompt(root, order, shopperId, trigger) {
@@ -6722,7 +7744,7 @@ function showRiderPaymentPrompt(root, order, shopperId, trigger) {
 }
 
 function orderAssignedShopperId(order) {
-    return String(order?.shopper_id || order?.SHOP_id || order?.ORDER_riderId || '').trim();
+    return String(order?.riderId || order?.rider_id || order?.shopper_id || order?.SHOP_id || order?.ORDER_riderId || '').trim();
 }
 
 function riderOwnsOrder(order, shopperId) {
@@ -6758,9 +7780,10 @@ function orderAfterRiderActivation(order, riderReadySince) {
 function riderCanSeeAvailableOrder(order, shopperId, riderReadySince) {
     const assignedShopper = orderAssignedShopperId(order);
     const status = orderStatus(order);
+    const openStatuses = ['Placed', 'Pending', 'Accepted', 'Ready', 'Ready for pickup', 'Ready to claim'];
     return Boolean(
         !assignedShopper
-        && ['Placed', 'Pending'].includes(status)
+        && openStatuses.includes(status)
         && !rejectedByRider(order, shopperId)
         && orderReadyForRider(order)
         && orderAfterRiderActivation(order, riderReadySince)
@@ -7241,14 +8264,7 @@ function initRiderDashboard() {
         `;
     };
 
-    const readRiderOrderItems = async (orderId) => {
-        if (!orderId) {
-            return [];
-        }
-
-        return (await readCollection(collections.orderItem, 1000))
-            .filter((item) => item.order_id === orderId || item.ORDER_id === orderId);
-    };
+    const readRiderOrderItems = async (orderId) => readFirestoreOrderItems(orderId);
 
     const updateLocalRiderOrder = (orderId, patch) => {
         riderOrders = riderOrders.map((order) => (
@@ -7324,13 +8340,7 @@ function initRiderDashboard() {
         try {
             let order = findRiderOrder(orderId);
             if (!order) {
-                const snapshot = await getDoc(docRef(collections.customerOrder, orderId));
-                if (snapshot.exists()) {
-                    order = {
-                        id: snapshot.id,
-                        ...snapshot.data()
-                    };
-                }
+                order = await readFirestoreOrder(orderId);
             }
 
             const isAvailable = order ? riderCanSeeAvailableOrder(order, shopperId, riderReadySince) : false;
@@ -7360,16 +8370,22 @@ function initRiderDashboard() {
     };
 
     if (!shopperId) {
-        location.href = 'index.php?modal=rider';
+        location.href = 'index.html?modal=rider';
         return;
     } else {
-        onSnapshot(docRef(collections.shopper, shopperId), (snapshot) => {
+        firebaseOnSnapshot(firebaseRoleDoc('rider', shopperId), async (snapshot) => {
             if (!snapshot.exists()) {
                 statusNode.textContent = 'Rider application was not found.';
                 return;
             }
 
-            const shopper = snapshot.data();
+            const userSnapshot = await firebaseGetDoc(firebaseUserDoc(shopperId)).catch(() => null);
+            const shopper = firebaseRiderRecord(
+                shopperId,
+                snapshot.data(),
+                userSnapshot?.exists?.() ? userSnapshot.data() : {},
+                account
+            );
             const status = shopper.SHOP_employmentStatus;
             if (status !== 'Active') {
                 redirectToWaiting('rider', shopperId);
@@ -7383,12 +8399,12 @@ function initRiderDashboard() {
         });
     }
 
-    listenCollection(collections.merchant, (records) => {
+    listenFirestoreMerchants((records) => {
         cacheMerchantStoreStatuses(records);
         renderRiderOrders();
-    }, 500);
+    });
 
-    listenCollection(collections.customerOrder, (orders) => {
+    listenFirestoreOrders((orders) => {
         riderOrders = orders;
         renderRiderOrders();
     });
@@ -7470,10 +8486,14 @@ function initRiderDashboard() {
 
                 await updateOrderStatus(order, 'Shopper accepted', shopperId);
                 updateLocalRiderOrder(order.id, {
+                    riderId: shopperId,
+                    rider_id: shopperId,
                     SHOP_id: shopperId,
                     shopper_id: shopperId,
                     ORDER_status: 'Shopper accepted',
-                    order_status: 'Shopper accepted'
+                    order_status: 'Shopper accepted',
+                    orderStatus: 'Shopper accepted',
+                    deliveryStatus: 'Shopper accepted'
                 });
                 statusNode.textContent = `Order ${order.order_id || order.id} accepted.`;
                 await openRiderOrderModal(order.id);
@@ -7491,13 +8511,14 @@ function initRiderDashboard() {
             if (order) {
                 await rejectOrderForRider(order, shopperId);
                 updateLocalRiderOrder(order.id, {
-                    rider_rejected_by: [...new Set([...(order.rider_rejected_by || []), shopperId])],
+                    rider_rejected_by: [...new Set([...(Array.isArray(order.rider_rejected_by) ? order.rider_rejected_by : []), shopperId])],
+                    riderRejectedBy: [...new Set([...(Array.isArray(order.riderRejectedBy) ? order.riderRejectedBy : []), shopperId])],
+                    lastRiderId: shopperId,
                     last_rider_id: shopperId,
-                    last_rider_action: 'Rejected',
-                    ORDER_status: 'Rejected',
-                    order_status: 'Rejected'
+                    lastRiderAction: 'Rejected',
+                    last_rider_action: 'Rejected'
                 });
-                statusNode.textContent = 'Order rejected.';
+                statusNode.textContent = 'Order skipped. It remains available for other riders.';
                 closeRiderOrderModal();
             }
         }
@@ -7525,7 +8546,9 @@ function initRiderDashboard() {
                 await updateOrderStatus(order, nextStatus, shopperId, nextStatus === 'Delivered' ? orderPaymentStatus(order) : null);
                 updateLocalRiderOrder(order.id, {
                     ORDER_status: nextStatus,
-                    order_status: nextStatus
+                    order_status: nextStatus,
+                    orderStatus: nextStatus,
+                    deliveryStatus: nextStatus
                 });
                 statusNode.textContent = `Order updated to ${nextStatus}.`;
                 await openRiderOrderModal(order.id);
@@ -7540,6 +8563,8 @@ function initRiderDashboard() {
                 updateLocalRiderOrder(order.id, {
                     ORDER_status: 'Delivered',
                     order_status: 'Delivered',
+                    orderStatus: 'Delivered',
+                    deliveryStatus: 'Delivered',
                     PAY_status: 'Paid',
                     payment_status: 'Paid',
                     paymentStatus: 'Paid'
@@ -7659,41 +8684,23 @@ function initSellerRegistration() {
                     label: currentAddressLabel
                 });
                 const businessHours = businessHoursValue(form);
-                const existingRole = await findAccountRoleByEmail(email);
-                if (existingRole) {
-                    setNotice(notice, accountAlreadyExistsMessage(existingRole), true);
-                    return;
-                }
+                const account = await createMerchantFirebaseAccount({
+                    ownerFirstName,
+                    ownerLastName,
+                    email,
+                    phone,
+                    password,
+                    storeName: merchantName,
+                    merchantType: formData.get('merchantType'),
+                    address: merchantAddress.address,
+                    businessHours
+                });
 
-                const businessProofPath = await uploadImageInput(form.elements.businessProof, 'merchant-proof', 'Business Permit / Proof of Merchant');
-                const merchantId = await nextId(collections.merchant);
-                const payload = {
-                    MERCH_id: merchantId,
-                    MERCH_ownerFirstName: ownerFirstName,
-                    MERCH_ownerLastName: ownerLastName,
-                    MERCH_ownerEmail: email,
-                    MERCH_password: password,
-                    MERCH_phone: phone,
-                    MERCH_name: merchantName,
-                    MERCH_type: formData.get('merchantType'),
-                    MERCH_address: merchantAddress.address,
-                    MERCH_businessHours: businessHours,
-                    MERCH_businessProof: businessProofPath,
-                    MERCH_availableDays: 'Monday, Tuesday, Wednesday, Thursday, Friday, Saturday',
-                    MERCH_storeStatus: 'Open',
-                    MERCH_approvalStatus: 'Pending',
-                    MERCH_createdAt: serverTimestamp(),
-                    role: 'seller'
-                };
-
-                await setDoc(docRef(collections.merchant, merchantId), payload);
-
-                saveLocal(storageKeys.merchantId, merchantId);
-                saveLocal(storageKeys.sellerApplication, merchantId);
+                saveRoleStorageForAccount(account);
                 setNotice(notice, pendingApprovalMessage);
-                setTimeout(redirectToPendingApproval, 500);
+                setTimeout(() => redirectToWaiting('seller', accountLinkedId(account)), 500);
             } catch (error) {
-                setNotice(notice, error.message || 'Merchant registration could not be saved.', true);
+                setNotice(notice, firebaseAuthMessage(error) || 'Merchant registration could not be saved.', true);
             }
         });
     });
@@ -7860,14 +8867,7 @@ function initSellerDashboard() {
         ].some((candidate) => String(candidate || '').trim() === expectedId));
     };
 
-    const readSellerOrderItems = async (orderId) => {
-        if (!orderId) {
-            return [];
-        }
-
-        return (await readCollection(collections.orderItem, 1000))
-            .filter((item) => item.order_id === orderId || item.ORDER_id === orderId);
-    };
+    const readSellerOrderItems = async (orderId) => readFirestoreOrderItems(orderId);
 
     const findSellerOrder = async (orderId) => {
         const localOrder = sellerOrders.find((order) => sameSellerOrder(order, orderId));
@@ -7875,15 +8875,7 @@ function initSellerDashboard() {
             return localOrder;
         }
 
-        const snapshot = await getDoc(docRef(collections.customerOrder, orderId));
-        if (!snapshot.exists()) {
-            return null;
-        }
-
-        return {
-            id: snapshot.id,
-            ...snapshot.data()
-        };
+        return readFirestoreOrder(orderId);
     };
 
     const closeSellerOrderModal = () => {
@@ -7946,7 +8938,7 @@ function initSellerDashboard() {
 
     const findSellerProduct = (productId) => {
         const expectedId = String(productId || '').trim();
-        return sellerProducts.find((product) => [product.id, product.PROD_id].some((candidate) => String(candidate || '').trim() === expectedId));
+        return sellerProducts.find((product) => [productRecordId(product), product.id, product.PROD_id].some((candidate) => String(candidate || '').trim() === expectedId));
     };
 
     const updateInlineProductSummary = (product) => {
@@ -7954,11 +8946,11 @@ function initSellerDashboard() {
             return;
         }
 
-        const productName = product.name || product.PROD_name || 'Selected product';
+        const productName = productRecordName(product) || 'Selected product';
         const productCategory = product.category || product.PROD_category || 'No category';
         const productUnit = product.unit || product.PROD_unit || 'No unit';
         const productPrice = formatMoney(product.price || product.PROD_price || 0);
-        const productImage = productImagePath(product.image || product.PROD_image);
+        const productImage = productImagePath(productRecordImageUrl(product));
 
         inlineProductSummary.hidden = false;
         if (inlineProductPreviewImage) {
@@ -7978,11 +8970,11 @@ function initSellerDashboard() {
             return;
         }
 
-        setProductEditorField(inlineProductEditor, 'name', product.name || product.PROD_name || '');
+        setProductEditorField(inlineProductEditor, 'name', productRecordName(product) || '');
         setProductEditorField(inlineProductEditor, 'category', product.category || product.PROD_category || '');
         setProductEditorField(inlineProductEditor, 'unit', product.unit || product.PROD_unit || '');
         setProductEditorField(inlineProductEditor, 'price', product.price || product.PROD_price || '');
-        setProductEditorField(inlineProductEditor, 'alt', product.alt || product.name || product.PROD_name || '');
+        setProductEditorField(inlineProductEditor, 'alt', product.alt || productRecordName(product) || '');
         setProductEditorField(inlineProductEditor, 'description', product.description || product.PROD_description || '');
         if (inlineProductImageInput) {
             inlineProductImageInput.value = '';
@@ -8002,7 +8994,7 @@ function initSellerDashboard() {
         editingSellerProduct = product;
         inlineProductEditor.hidden = false;
         if (inlineProductEditorStatus) {
-            inlineProductEditorStatus.textContent = `${product.name || product.PROD_name || 'Product'} - edit product details below.`;
+            inlineProductEditorStatus.textContent = `${productRecordName(product) || 'Product'} - edit product details below.`;
         }
         fillInlineProductEditor(product);
         showSellerView('edit-product');
@@ -8044,48 +9036,32 @@ function initSellerDashboard() {
                 return;
             }
 
-            const productId = editingSellerProduct.PROD_id || editingSellerProduct.id;
+            const productId = productRecordId(editingSellerProduct);
             const productName = productEditorFieldValue(inlineProductEditor, 'name');
             const productCategory = productEditorFieldValue(inlineProductEditor, 'category');
             const productUnit = productEditorFieldValue(inlineProductEditor, 'unit');
             const productPrice = Number(productEditorFieldValue(inlineProductEditor, 'price')) || 0;
             const productAlt = productEditorFieldValue(inlineProductEditor, 'alt') || productName;
             const productDescription = productEditorFieldValue(inlineProductEditor, 'description');
-            const productType = editingSellerProduct.type || (merchantType === 'Food' ? 'food' : 'grocery');
-            const currentProductImage = productImagePath(editingSellerProduct.image || editingSellerProduct.PROD_image);
+            const currentProductImage = productRecordImageUrl(editingSellerProduct, DEFAULT_PRODUCT_IMAGE);
 
             try {
-                const productImage = await uploadOptionalImageInput(
+                const productImage = productImageUrlForSave(
                     inlineProductImageInput,
-                    'product',
-                    'Product Image',
                     currentProductImage
                 );
 
-                await setDoc(docRef(collections.products, productId), {
-                    PROD_id: productId,
-                    PROD_name: productName,
-                    PROD_price: productPrice,
-                    PROD_category: productCategory,
-                    PROD_unit: productUnit,
-                    PROD_description: productDescription,
-                    MERCH_id: merchantId,
-                    name: productName,
-                    price: productPrice,
+                await firebaseSetDoc(firestoreProductDoc(productId), {
+                    productId,
+                    merchantId,
+                    productName,
                     category: productCategory,
                     unit: productUnit,
+                    price: productPrice,
                     description: productDescription,
-                    merchantId,
-                    merchant: editingSellerProduct.merchant || editingSellerProduct.merchant_name || merchantName || 'Approved merchant',
-                    merchant_name: editingSellerProduct.merchant_name || editingSellerProduct.merchant || merchantName || 'Approved merchant',
-                    type: productType,
-                    tag: editingSellerProduct.tag || 'Merchant',
-                    rating: editingSellerProduct.rating || '4.6',
-                    image: productImage,
-                    alt: productAlt,
-                    approvalStatus: 'Active',
-                    source: 'seller-dashboard',
-                    updatedAt: serverTimestamp()
+                    imageUrl: productImage,
+                    status: 'Active',
+                    updatedAt: firebaseServerTimestamp()
                 }, { merge: true });
                 inlineProductDirty = false;
                 if (inlineProductImageInput) {
@@ -8101,9 +9077,12 @@ function initSellerDashboard() {
                     PROD_unit: productUnit,
                     price: productPrice,
                     PROD_price: productPrice,
+                    description: productDescription,
                     image: productImage,
                     PROD_image: productImage,
-                    alt: productAlt
+                    imageUrl: productImage,
+                    alt: productAlt,
+                    status: 'Active'
                 };
                 editingSellerProduct = savedProduct;
                 updateInlineProductSummary(savedProduct);
@@ -8118,16 +9097,22 @@ function initSellerDashboard() {
     }
 
     if (!merchantId) {
-        location.href = 'index.php?modal=merchant';
+        location.href = 'index.html?modal=merchant';
         return;
     } else {
-        onSnapshot(docRef(collections.merchant, merchantId), (snapshot) => {
+        firebaseOnSnapshot(firebaseRoleDoc('seller', merchantId), async (snapshot) => {
             if (!snapshot.exists()) {
                 statusNode.textContent = 'Merchant profile was not found.';
                 return;
             }
 
-            const merchant = snapshot.data();
+            const userSnapshot = await firebaseGetDoc(firebaseUserDoc(merchantId)).catch(() => null);
+            const merchant = firebaseMerchantRecord(
+                merchantId,
+                snapshot.data(),
+                userSnapshot?.exists?.() ? userSnapshot.data() : {},
+                account
+            );
             merchantName = merchant.MERCH_name || '';
             merchantType = merchant.MERCH_type || 'Grocery';
             const status = merchant.MERCH_approvalStatus;
@@ -8143,19 +9128,19 @@ function initSellerDashboard() {
         });
     }
 
-    listenCollection(collections.customerOrder, (orders) => {
+    listenFirestoreOrdersForMerchant(merchantId, (orders) => {
         sellerOrders = orders;
         renderSellerOrders();
     });
 
-    listenCollection(collections.products, (products) => {
+    listenFirestoreProductsForMerchant(merchantId, (products) => {
         const merchantProducts = products.filter((product) => {
-            return merchantId && (product.MERCH_id === merchantId || product.merchantId === merchantId);
+            return merchantId && productRecordMerchantId(product) === merchantId && productIsActive(product);
         });
 
         sellerProducts = merchantProducts;
         if (editingSellerProduct) {
-            const refreshedProduct = findSellerProduct(editingSellerProduct.PROD_id || editingSellerProduct.id);
+            const refreshedProduct = findSellerProduct(productRecordId(editingSellerProduct));
             if (refreshedProduct) {
                 editingSellerProduct = refreshedProduct;
                 if (!inlineProductDirty) {
@@ -8167,8 +9152,8 @@ function initSellerDashboard() {
             productList.innerHTML = merchantProducts.length === 0
                 ? '<div class="empty-state">No merchant products yet.</div>'
                 : merchantProducts.map((product) => `
-                    <button class="mini-row linked-row seller-product-edit-row" type="button" data-seller-edit-product="${escapeHtml(product.PROD_id || product.id)}">
-                        <strong>${escapeHtml(product.name || product.PROD_name)}</strong>
+                    <button class="mini-row linked-row seller-product-edit-row" type="button" data-seller-edit-product="${escapeHtml(productRecordId(product))}">
+                        <strong>${escapeHtml(productRecordName(product))}</strong>
                         <span>${formatMoney(product.price || product.PROD_price || 0)} - Edit</span>
                     </button>
                 `).join('');
@@ -8192,42 +9177,26 @@ function initSellerDashboard() {
         const productCategory = String(formData.get('category') || '').trim();
         const productUnit = String(formData.get('unit') || '').trim();
         const productPrice = Number(formData.get('price')) || 0;
-        const productType = merchantType === 'Food' ? 'food' : 'grocery';
         const productDescription = String(formData.get('description') || '').trim();
 
         try {
-            const productImage = await uploadOptionalImageInput(
+            const productImage = productImageUrlForSave(
                 productForm.elements.productImage,
-                'product',
-                'Product Image',
                 DEFAULT_PRODUCT_IMAGE
             );
 
-            await setDoc(docRef(collections.products, productId), {
-                PROD_id: productId,
-                PROD_name: productName,
-                PROD_price: productPrice,
-                PROD_category: productCategory,
-                PROD_unit: productUnit,
-                PROD_description: productDescription,
-                MERCH_id: merchantId,
-                name: productName,
-                price: productPrice,
+            await firebaseSetDoc(firestoreProductDoc(productId), {
+                productId,
+                merchantId,
+                productName,
                 category: productCategory,
                 unit: productUnit,
+                price: productPrice,
                 description: productDescription,
-                merchantId,
-                merchant: merchantName,
-                merchant_name: merchantName,
-                type: productType,
-                tag: 'Merchant',
-                rating: '4.6',
-                image: productImage,
-                alt: productName,
-                approvalStatus: 'Active',
-                source: 'seller-dashboard',
-                createdAt: serverTimestamp(),
-                updatedAt: serverTimestamp()
+                imageUrl: productImage,
+                status: 'Active',
+                createdAt: firebaseServerTimestamp(),
+                updatedAt: firebaseServerTimestamp()
             }, { merge: true });
 
             setNotice(notice, 'Product saved.');
@@ -8255,6 +9224,7 @@ function initSellerDashboard() {
         const cardDetailsButton = event.target.closest('[data-seller-card-details]');
         const editProductButton = event.target.closest('[data-seller-edit-product]');
         const productEditorBackButton = event.target.closest('[data-seller-product-editor-back]');
+        const deleteProductButton = event.target.closest('[data-seller-product-delete]');
         const paidButton = event.target.closest('[data-seller-verify-paid]');
         const unpaidButton = event.target.closest('[data-seller-verify-unpaid]');
 
@@ -8267,6 +9237,31 @@ function initSellerDashboard() {
         if (productEditorBackButton && root.contains(productEditorBackButton)) {
             event.preventDefault();
             closeInlineProductEditor();
+            return;
+        }
+
+        if (deleteProductButton && root.contains(deleteProductButton)) {
+            event.preventDefault();
+            if (!editingSellerProduct) {
+                setNotice(inlineProductEditorNotice, 'Select a product first.', true);
+                return;
+            }
+
+            const productId = productRecordId(editingSellerProduct);
+            if (!productId || !window.confirm('Delete this product?')) {
+                return;
+            }
+
+            deleteProductButton.disabled = true;
+            try {
+                await deleteFirestoreProduct(productId);
+                closeInlineProductEditor();
+                statusNode.textContent = 'Product deleted.';
+            } catch (error) {
+                setNotice(inlineProductEditorNotice, error.message || 'Product could not be deleted.', true);
+            } finally {
+                deleteProductButton.disabled = false;
+            }
             return;
         }
 
@@ -8487,11 +9482,11 @@ function adminAccountCollection(type) {
 
 function adminVerificationProof(record, type) {
     if (type === 'riders') {
-        return record.SHOP_validId || record.RIDER_validId || record.validId || '';
+        return record.validIdUrl || record.licenseUrl || record.SHOP_validId || record.RIDER_validId || record.SHOP_license || record.RIDER_license || record.validId || record.license || '';
     }
 
     if (type === 'sellers') {
-        return record.MERCH_businessProof || record.MERCH_businessPermit || record.MERCH_permit || record.businessProof || '';
+        return record.documentUrl || record.MERCH_businessProof || record.MERCH_businessPermit || record.MERCH_permit || record.businessProof || '';
     }
 
     return '';
@@ -8552,6 +9547,7 @@ function adminDetailRows(record, type) {
             ['Phone Number', adminAccountPhone(record, type)],
             ['Role', roleLower(record.USER_role) || 'customer'],
             ['Status', record.USER_status || 'Active'],
+            ['Address', record.USER_address || record.CUST_address || record.address || ''],
             ['City', record.USER_city || record.CUST_city || ''],
             ['Preferred Delivery Time', record.USER_preferredDeliveryTime || record.CUST_preferredDeliveryTime || '']
         ].map(([label, value]) => adminFieldRow(label, value)).join('');
@@ -8763,30 +9759,42 @@ function closeAdminApprovalModal(root) {
 }
 
 async function setAdminApprovalStatus(collectionName, id, approved) {
-    if (collectionName === collections.shopper) {
-        await updateDoc(docRef(collections.shopper, id), {
-            SHOP_availabilityStatus: approved ? 'Available' : 'Unavailable',
-            SHOP_employmentStatus: approved ? 'Active' : 'Inactive',
-            role: 'rider',
-            updatedAt: serverTimestamp()
-        });
+    if (!id) {
         return;
     }
 
-    if (collectionName === collections.merchant) {
-        await updateDoc(docRef(collections.merchant, id), {
-            MERCH_approvalStatus: approved ? 'Approved' : 'Rejected',
-            MERCH_storeStatus: approved ? 'Open' : 'Closed',
-            role: 'seller'
-        });
-        await setDoc(docRef(collections.stores, id), {
-            STORE_id: id,
-            MERCH_id: id,
-            STORE_status: approved ? 'Open' : 'Rejected',
-            STORE_reviewedAt: serverTimestamp()
+    const status = approved ? 'approved' : 'rejected';
+    const timestamp = firebaseServerTimestamp();
+
+    if (collectionName === collections.shopper || collectionName === 'riders') {
+        await firebaseSetDoc(firebaseRoleDoc('rider', id), {
+            approvalStatus: status,
+            availabilityStatus: approved ? 'Available' : 'Unavailable',
+            SHOP_employmentStatus: approved ? 'Active' : 'Inactive',
+            updatedAt: timestamp
+        }, { merge: true });
+        await firebaseSetDoc(firebaseUserDoc(id), {
+            role: 'rider',
+            status,
+            updatedAt: timestamp
+        }, { merge: true });
+        return;
+    }
+
+    if (collectionName === collections.merchant || collectionName === 'merchants') {
+        await firebaseSetDoc(firebaseRoleDoc('seller', id), {
+            approvalStatus: status,
+            storeStatus: approved ? 'Open' : 'Closed',
+            updatedAt: timestamp
+        }, { merge: true });
+        await firebaseSetDoc(firebaseUserDoc(id), {
+            role: 'merchant',
+            status,
+            updatedAt: timestamp
         }, { merge: true });
     }
 }
+
 
 function adminAccountCard(record, type) {
     const status = adminStatusLabel(type, record);
@@ -8979,58 +9987,53 @@ async function markAdminAccountDeleted(email, role, details = {}) {
 }
 
 async function deleteAdminAccount(type, record) {
+    const uid = record?.id || record?.USER_linkedId || record?.USER_id || record?.MERCH_id || record?.SHOP_id || record?.RIDER_id || '';
+    if (!uid) {
+        return;
+    }
+
     if (type === 'customers') {
-        const email = record.USER_email || record.email;
-        const customerId = isCustomerRecordId(record.USER_linkedId)
-            ? record.USER_linkedId
-            : '';
-        await markAdminAccountDeleted(email, 'customer', {
-            linkedId: customerId || record.USER_linkedId || record.USER_id || record.id,
-            firstName: record.USER_firstName || '',
-            lastName: record.USER_lastName || '',
-            phone: record.USER_phone || ''
-        });
+        await firebaseSetDoc(firebaseUserDoc(uid), {
+            role: 'customer',
+            status: 'deleted',
+            updatedAt: firebaseServerTimestamp()
+        }, { merge: true });
+        await firebaseDeleteDoc(firebaseRoleDoc('customer', uid)).catch(() => {});
         return;
     }
 
     if (type === 'riders') {
-        await safeDeleteRecord(collections.shopper, record.id);
+        await firebaseSetDoc(firebaseUserDoc(uid), {
+            role: 'rider',
+            status: 'deleted',
+            updatedAt: firebaseServerTimestamp()
+        }, { merge: true });
+        await firebaseDeleteDoc(firebaseRoleDoc('rider', uid)).catch(() => {});
         return;
     }
 
     if (type === 'sellers') {
-        const merchantId = record.MERCH_id || record.id;
-        const products = await readCollection(collections.products, 1000);
+        const products = await readFirestoreProducts(1000);
         await Promise.all(products
-            .filter((product) => (product.MERCH_id || product.merchantId) === merchantId)
-            .map((product) => safeDeleteRecord(collections.products, product.id)));
-        await safeDeleteRecord(collections.stores, merchantId);
-        await safeDeleteRecord(collections.merchant, record.id);
+            .filter((product) => productRecordMerchantId(product) === uid)
+            .map((product) => deleteFirestoreProduct(productRecordId(product))));
+        await firebaseSetDoc(firebaseUserDoc(uid), {
+            role: 'merchant',
+            status: 'deleted',
+            updatedAt: firebaseServerTimestamp()
+        }, { merge: true });
+        await firebaseDeleteDoc(firebaseRoleDoc('seller', uid)).catch(() => {});
     }
 }
 
+
 async function deleteOrderEverywhere(order) {
-    const orderId = order.id || order.order_id || order.ORDER_id;
+    const orderId = order.id || order.orderId || order.order_id || order.ORDER_id;
     if (!orderId) {
         return;
     }
 
-    const deliveryId = order.delivery_id || order.DELIVERY_id;
-    const items = await readCollection(collections.orderItem, 1000);
-    const substitutions = await readCollection(collections.substitution, 1000);
-    const orderItems = items.filter((item) => item.order_id === orderId || item.ORDER_id === orderId);
-    const itemIds = new Set(orderItems.map((item) => item.id));
-
-    await Promise.all([
-        ...orderItems.map((item) => safeDeleteRecord(collections.orderItem, item.id)),
-        ...substitutions
-            .filter((item) => item.order_id === orderId || item.ORDER_id === orderId || itemIds.has(item.ITEM_id || item.item_id))
-            .map((item) => safeDeleteRecord(collections.substitution, item.id)),
-        safeDeleteRecord(collections.customerOrder, orderId),
-        safeDeleteRecord(collections.orders, orderId),
-        safeDeleteRecord(collections.paymentTransaction, orderId),
-        deliveryId ? safeDeleteRecord(collections.delivery, deliveryId) : Promise.resolve()
-    ]);
+    await deleteFirestoreOrder(orderId);
 }
 
 function showAdminRemoveOrderPrompt(root, order, trigger) {
@@ -9128,7 +10131,7 @@ function initAdminDashboard() {
 
     const account = getCurrentAccount();
     if (accountRole(account) !== 'admin' || account?.USER_status !== 'Active' || accountEmail(account) !== adminAccount.USER_email) {
-        location.href = 'index.php?modal=signin';
+        location.href = 'index.html?modal=signin';
         return;
     }
 
@@ -9148,6 +10151,10 @@ function initAdminDashboard() {
     const adminState = {
         activeView: initialAdminView,
         orders: [],
+        users: [],
+        customerProfiles: [],
+        merchantProfiles: [],
+        riderProfiles: [],
         customers: [],
         riders: [],
         sellers: [],
@@ -9158,7 +10165,7 @@ function initAdminDashboard() {
     const viewTitles = {
         customers: 'Customer Accounts',
         riders: 'Rider Accounts',
-        sellers: 'Merchant Account',
+        sellers: 'Merchant Accounts',
         issues: 'Ratings/Refunds',
         orders: 'Order Logs'
     };
@@ -9174,17 +10181,29 @@ function initAdminDashboard() {
         });
     }
 
+    function syncFirestoreAdminAccounts() {
+        const combined = combineFirestoreAdminAccounts(
+            adminState.users,
+            adminState.customerProfiles,
+            adminState.merchantProfiles,
+            adminState.riderProfiles
+        );
+        adminState.customers = combined.customers;
+        adminState.sellers = combined.sellers;
+        adminState.riders = combined.riders;
+    }
+
     function accountRecords(type) {
         if (type === 'customers') {
             return adminState.customers.filter((record) => roleLower(record.USER_role) === 'customer' && !isDeletedAccountRecord(record));
         }
 
         if (type === 'riders') {
-            return adminState.riders.filter(isRiderRecord);
+            return adminState.riders.filter((record) => isRiderRecord(record) && !isDeletedAccountRecord(record));
         }
 
         if (type === 'sellers') {
-            return adminState.sellers.filter(isSellerAccountRecord);
+            return adminState.sellers.filter((record) => isSellerAccountRecord(record) && !isDeletedAccountRecord(record));
         }
 
         return [];
@@ -9297,53 +10316,65 @@ function initAdminDashboard() {
         });
     });
 
-    listenCollection(collections.customerOrder, (orders) => {
+    listenFirestoreOrders((orders) => {
         adminState.orders = orders;
         updateAdminStats();
         if (adminState.activeView === 'orders') {
             renderAdminView();
         }
-    }, 500);
+    });
 
-    listenCollection(collections.userAccount, (records) => {
-        adminState.customers = records;
+    listenFirestoreCollectionRecords('users', (records) => {
+        adminState.users = records;
+        syncFirestoreAdminAccounts();
+        updateAdminStats();
+        if (['customers', 'riders', 'sellers'].includes(adminState.activeView)) {
+            renderAdminView();
+        }
+    });
+
+    listenFirestoreCollectionRecords('customers', (records) => {
+        adminState.customerProfiles = records;
+        syncFirestoreAdminAccounts();
         updateAdminStats();
         if (adminState.activeView === 'customers') {
             renderAdminView();
         }
-    }, 500);
+    });
 
-    listenCollection(collections.shopper, (records) => {
-        adminState.riders = records;
+    listenFirestoreCollectionRecords('riders', (records) => {
+        adminState.riderProfiles = records;
+        syncFirestoreAdminAccounts();
         updateAdminStats();
         if (adminState.activeView === 'riders') {
             renderAdminView();
         }
-    }, 500);
+    });
 
-    listenCollection(collections.merchant, (records) => {
-        adminState.sellers = records;
+    listenFirestoreCollectionRecords('merchants', (records) => {
+        adminState.merchantProfiles = records;
+        syncFirestoreAdminAccounts();
         updateAdminStats();
         if (adminState.activeView === 'sellers') {
             renderAdminView();
         }
-    }, 500);
+    });
 
-    listenCollection(collections.rating, (records) => {
+    listenFirestoreRatings((records) => {
         adminState.ratings = records;
         updateAdminStats();
         if (adminState.activeView === 'issues') {
             renderAdminView();
         }
-    }, 500);
+    });
 
-    listenCollection(collections.refund, (records) => {
+    listenFirestoreRefunds((records) => {
         adminState.refunds = records;
         updateAdminStats();
         if (adminState.activeView === 'issues') {
             renderAdminView();
         }
-    }, 500);
+    });
 
     renderAdminView();
 
@@ -9467,7 +10498,7 @@ function initAdminDashboard() {
             removeRatingConfirmButton.disabled = true;
             removeRatingConfirmButton.setAttribute('aria-busy', 'true');
             try {
-                await safeDeleteRecord(collections.rating, rating.id);
+                await deleteFirestoreRating(rating.id);
                 setNotice(adminNotice, 'Rating removed.');
             } catch (error) {
                 setNotice(adminNotice, error.message || 'Rating could not be removed.', true);
@@ -9530,31 +10561,31 @@ function initAdminDashboard() {
     });
 }
 
-function applicationStatusConfig(role, data) {
+function applicationStatusConfig(role, data, user = {}) {
     if (role === 'seller') {
-        const status = data.MERCH_approvalStatus || 'Pending';
+        const status = recordApprovalStatus(data.approvalStatus || data.MERCH_approvalStatus, user.status, 'Approved', 'Rejected', 'Pending');
         return {
             status,
-            name: data.MERCH_name || 'Merchant application',
-            displayName: merchantOwnerName(data) || data.MERCH_name || 'Merchant',
-            email: data.MERCH_ownerEmail || '',
+            name: data.storeName || data.MERCH_name || 'Merchant application',
+            displayName: user.username || merchantOwnerName(data) || data.storeName || data.MERCH_name || 'Merchant',
+            email: user.email || data.MERCH_ownerEmail || '',
             pending: 'Your merchant application is pending admin approval.',
             approved: 'Your application has been approved.',
             rejected: 'Your application has been rejected.',
-            dashboard: 'seller-dashboard.php'
+            dashboard: 'seller-dashboard.html'
         };
     }
 
-    const status = data.SHOP_employmentStatus || 'Pending';
+    const status = recordApprovalStatus(data.approvalStatus || data.SHOP_employmentStatus, user.status, 'Active', 'Inactive', 'Pending');
     return {
         status,
-        name: riderFullName(data) || 'Rider application',
-        displayName: riderFullName(data) || 'Rider',
-        email: data.SHOP_email || '',
+        name: data.fullName || riderFullName(data) || 'Rider application',
+        displayName: user.username || data.fullName || riderFullName(data) || 'Rider',
+        email: user.email || data.SHOP_email || '',
         pending: 'Your rider application is pending admin approval.',
         approved: 'Your application has been approved.',
         rejected: 'Your application has been rejected.',
-        dashboard: 'rider-dashboard.php'
+        dashboard: 'rider-dashboard.html'
     };
 }
 
@@ -9566,11 +10597,10 @@ function initApplicationStatus() {
 
     const params = new URLSearchParams(location.search);
     const account = getCurrentAccount();
-    const role = params.get('role') || accountRole(account) || '';
+    const role = normalizedAccountRole(params.get('role') || accountRole(account) || '');
     const id = params.get('id')
         || accountLinkedId(account)
         || '';
-    const collectionName = role === 'seller' ? collections.merchant : collections.shopper;
     const title = $('[data-status-title]', root);
     const message = $('[data-status-message]', root);
     const details = $('[data-status-details]', root);
@@ -9589,11 +10619,11 @@ function initApplicationStatus() {
     }
 
     if (!accountMatchesApplication && !sessionMatchesApplication) {
-        location.href = 'index.php?modal=signin';
+        location.href = 'index.html?modal=signin';
         return;
     }
 
-    onSnapshot(docRef(collectionName, id), (snapshot) => {
+    firebaseOnSnapshot(firebaseRoleDoc(role, id), async (snapshot) => {
         if (!snapshot.exists()) {
             title.textContent = 'Application not found.';
             message.textContent = 'The application record does not exist.';
@@ -9602,7 +10632,14 @@ function initApplicationStatus() {
         }
 
         const data = snapshot.data();
-        const config = applicationStatusConfig(role, data);
+        const userSnapshot = await firebaseGetDoc(firebaseUserDoc(id)).catch(() => null);
+        const userData = userSnapshot?.exists?.() ? userSnapshot.data() : {};
+        const user = {
+            ...userData,
+            role: userData.role || (role === 'seller' ? 'merchant' : 'rider'),
+            email: userData.email || accountEmail(account)
+        };
+        const config = applicationStatusConfig(role, data, user);
         const isApproved = role === 'seller'
             ? config.status === 'Approved'
             : config.status === 'Active';
@@ -9615,35 +10652,30 @@ function initApplicationStatus() {
         if (isApproved) {
             message.textContent = config.approved;
             if (accountMatchesApplication) {
-                setCurrentAccount({
-                    USER_role: role,
-                    USER_email: config.email,
-                    USER_linkedId: id,
-                    USER_displayName: config.displayName,
-                    MERCH_approvalStatus: role === 'seller' ? 'Approved' : undefined,
-                    SHOP_employmentStatus: role === 'rider' ? 'Active' : undefined
-                });
+                const nextAccount = buildAccountFromFirebaseRecords(id, config.email, user, data);
+                setCurrentAccount(nextAccount);
+                saveRoleStorageForAccount(nextAccount);
             }
             actions.innerHTML = `
-                ${accountMatchesApplication ? `<a class="primary-button" href="${config.dashboard}"><i data-lucide="layout-dashboard" aria-hidden="true"></i> Open dashboard</a>` : '<a class="primary-button" href="index.php?modal=signin" data-account-modal-trigger="signin"><i data-lucide="log-in" aria-hidden="true"></i> Sign in to approved account</a>'}
-                <a class="ghost-button" href="index.php"><i data-lucide="home" aria-hidden="true"></i> Start page</a>
+                ${accountMatchesApplication ? `<a class="primary-button" href="${config.dashboard}"><i data-lucide="layout-dashboard" aria-hidden="true"></i> Open dashboard</a>` : '<a class="primary-button" href="index.html?modal=signin" data-account-modal-trigger="signin"><i data-lucide="log-in" aria-hidden="true"></i> Sign in to approved account</a>'}
+                <a class="ghost-button" href="index.html"><i data-lucide="home" aria-hidden="true"></i> Start page</a>
             `;
         } else if (isRejected) {
             message.textContent = config.rejected;
             if (accountMatchesApplication) {
-                setCurrentAccount({
-                    USER_role: role,
-                    USER_email: config.email,
-                    USER_linkedId: id,
-                    USER_displayName: config.displayName,
-                    MERCH_approvalStatus: role === 'seller' ? 'Rejected' : undefined,
-                    SHOP_employmentStatus: role === 'rider' ? 'Inactive' : undefined
-                });
+                const nextAccount = buildAccountFromFirebaseRecords(id, config.email, user, data);
+                setCurrentAccount(nextAccount);
+                saveRoleStorageForAccount(nextAccount);
             }
-            actions.innerHTML = '<a class="ghost-button" href="index.php"><i data-lucide="home" aria-hidden="true"></i> Start page</a>';
+            actions.innerHTML = '<a class="ghost-button" href="index.html"><i data-lucide="home" aria-hidden="true"></i> Start page</a>';
         } else {
             message.textContent = config.pending;
-            actions.innerHTML = '<a class="ghost-button" href="index.php"><i data-lucide="home" aria-hidden="true"></i> Start page</a>';
+            if (accountMatchesApplication) {
+                const nextAccount = buildAccountFromFirebaseRecords(id, config.email, user, data);
+                setCurrentAccount(nextAccount);
+                saveRoleStorageForAccount(nextAccount);
+            }
+            actions.innerHTML = '<a class="ghost-button" href="index.html"><i data-lucide="home" aria-hidden="true"></i> Start page</a>';
         }
 
         details.innerHTML = `
@@ -9676,7 +10708,7 @@ function updateAccountLinks() {
             profileLink.href = '#profile';
             profileLink.setAttribute('data-account-modal-trigger', 'profile');
         } else {
-            profileLink.href = account ? dashboardForAccount(account) : 'index.php?modal=signin';
+            profileLink.href = account ? dashboardForAccount(account) : 'index.html?modal=signin';
             profileLink.removeAttribute('data-account-modal-trigger');
         }
         profileLink.innerHTML = '<i data-lucide="user" aria-hidden="true"></i> Profile';
@@ -9730,7 +10762,7 @@ function renderAuthChrome(account) {
 
     $$('[data-nav-dashboard]').forEach((node) => {
         node.hidden = !account;
-        node.href = account ? dashboardForAccount(account) : 'index.php?modal=signin';
+        node.href = account ? dashboardForAccount(account) : 'index.html?modal=signin';
     });
 
     $$('[data-customer-shop]').forEach((node) => {
@@ -9831,7 +10863,7 @@ function initAccountModals() {
 function settingsTriggerPointsToSettings(trigger) {
     const href = trigger.getAttribute('href') || '';
     return trigger.matches('[data-guest-settings-trigger], [data-more-settings-link]')
-        || /(^|\/)settings\.php(?:[?#].*)?$/.test(href);
+        || /(^|\/)settings\.html(?:[?#].*)?$/.test(href);
 }
 
 function initGuestSettingsDrawer() {
@@ -10139,13 +11171,26 @@ async function applyAccountSettings(role, section) {
             MERCH_storeStatus: normalizeMerchantStoreStatus(settingFieldValue(section, 'storeStatus'))
         };
 
-        await assertPasswordChange(section, collections.merchant, linkedId, 'MERCH_password', payload);
-        await setDoc(docRef(collections.merchant, linkedId), payload, { merge: true });
-        await setDoc(docRef(collections.stores, linkedId), {
-            STORE_id: linkedId,
-            MERCH_id: linkedId,
-            STORE_status: payload.MERCH_storeStatus,
-            STORE_reviewedAt: serverTimestamp()
+        if (passwordFieldValue(section, 'current') || passwordFieldValue(section, 'new') || passwordFieldValue(section, 'confirm')) {
+            throw new Error('Merchant password changes will move to Firebase Authentication in a later auth settings phase.');
+        }
+
+        await firebaseSetDoc(firebaseRoleDoc('seller', linkedId), {
+            storeName: payload.MERCH_name,
+            merchantType: payload.MERCH_type,
+            address: payload.MERCH_address,
+            approvalStatus: roleLower(account.MERCH_approvalStatus || account.USER_status || 'pending'),
+            storeStatus: payload.MERCH_storeStatus,
+            availableDays: payload.MERCH_availableDays,
+            logoUrl: account.logoUrl || '',
+            documentUrl: account.documentUrl || '',
+            updatedAt: firebaseServerTimestamp()
+        }, { merge: true });
+        await firebaseSetDoc(firebaseUserDoc(linkedId), {
+            email,
+            username: fullName || payload.MERCH_name,
+            role: 'merchant',
+            updatedAt: firebaseServerTimestamp()
         }, { merge: true });
         setCurrentAccount({
             ...account,
@@ -11050,10 +12095,11 @@ function closeLogoutConfirmModal({ restoreFocus = true } = {}) {
     logoutConfirmFocusReturn = null;
 }
 
-function confirmLogout() {
+async function confirmLogout() {
     closeLogoutConfirmModal({ restoreFocus: false });
+    await signOut(firebaseAuth).catch(() => {});
     clearCurrentAccount();
-    location.href = 'index.php';
+    location.href = 'index.html';
 }
 
 function initLogout() {
@@ -11402,7 +12448,7 @@ document.addEventListener('invalid', (event) => {
         showFieldError(input, message);
     }
 }, true);
-[
+const appInitializers = [
     ['initMoreMenu', initMoreMenu],
     ['initAccountModals', initAccountModals],
     ['initThemeToggles', initThemeToggles],
@@ -11427,9 +12473,16 @@ document.addEventListener('invalid', (event) => {
     ['initPasswordToggles', initPasswordToggles],
     ['initPasswordStrengthMeters', initPasswordStrengthMeters],
     ['initUiMotion', initUiMotion]
-].forEach(([name, initializer]) => runInitializer(name, initializer));
-refreshIcons();
-translatePage();
+];
+
+async function bootstrapHonestbeeApp() {
+    await startFirebaseAuthStateSync();
+    appInitializers.forEach(([name, initializer]) => runInitializer(name, initializer));
+    refreshIcons();
+    translatePage();
+}
+
+bootstrapHonestbeeApp().catch((error) => console.error('honestbee app failed', error));
 
 // Safety fix: make sure Merchant Profile always shows the Choose Location button beside Merchant Address.
 (function ensureMerchantProfileChooseLocationButton() {

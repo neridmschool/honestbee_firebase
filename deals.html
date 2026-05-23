@@ -1,0 +1,868 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Customer Deals | honestbee</title>
+    <link rel="icon" type="image/svg+xml" href="assets/img/honestbee-logo.svg?v=1779235629">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;500;600;700;800;900&display=swap">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+    <link rel="stylesheet" href="assets/css/styles.css?v=1779524504">
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" defer></script>
+    <script>
+        try {
+            const honestbeeAccount = localStorage.getItem('honestbee_account');
+            const parsedAccount = honestbeeAccount ? JSON.parse(honestbeeAccount) : null;
+            const themeKey = parsedAccount && parsedAccount.USER_email
+                ? `honestbee_theme_mode_${parsedAccount.USER_email}`
+                : 'honestbee_theme_mode';
+            const themeMode = localStorage.getItem(themeKey) || localStorage.getItem('honestbee_theme_mode') || 'light';
+            const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+            if (themeMode === 'dark' || (themeMode === 'system' && prefersDark)) {
+                document.documentElement.classList.add('theme-dark');
+            }
+            if (parsedAccount && parsedAccount.USER_role && parsedAccount.USER_email) {
+                document.documentElement.classList.add('has-current-account');
+                document.documentElement.classList.add(`account-role-${String(parsedAccount.USER_role).toLowerCase()}`);
+            }
+        } catch (error) {
+            localStorage.removeItem('honestbee_account');
+        }
+    </script>
+</head>
+<body class="dashboard-page" data-page="deals">
+    <div class="page-shell">
+        <header class="topbar">
+            <nav class="nav" aria-label="Primary navigation">
+                <a class="brand" href="index.html" aria-label="honestbee home">
+                    <span class="bee-mark" aria-hidden="true"><span class="bee-body"></span></span>
+                    <span>honestbee</span>
+                </a>
+                <div class="nav-links">
+                    <a href="index.html?modal=signin" data-nav-dashboard hidden>Dashboard</a>
+                    <a href="index.html?modal=rider" data-auth-guest data-account-modal-trigger="rider">Apply as Rider</a>
+                    <a href="index.html?modal=merchant" data-auth-guest data-account-modal-trigger="merchant">Apply as Merchant</a>
+                </div>
+                <div class="nav-actions">
+                    <label class="theme-switch" title="Toggle light or dark mode">
+                        <input type="checkbox" data-theme-toggle aria-label="Toggle light or dark mode">
+                        <span class="theme-switch-track" aria-hidden="true">
+                            <span class="theme-switch-cloud theme-switch-cloud-a"></span>
+                            <span class="theme-switch-cloud theme-switch-cloud-b"></span>
+                            <span class="theme-switch-star theme-switch-star-a"></span>
+                            <span class="theme-switch-star theme-switch-star-b"></span>
+                            <span class="theme-switch-star theme-switch-star-c"></span>
+                            <span class="theme-switch-knob">
+                                <span class="theme-switch-crater theme-switch-crater-a"></span>
+                                <span class="theme-switch-crater theme-switch-crater-b"></span>
+                                <span class="theme-switch-crater theme-switch-crater-c"></span>
+                            </span>
+                        </span>
+                    </label>
+                    <a class="ghost-button" href="index.html?modal=signin" data-auth-guest data-account-modal-trigger="signin"><i data-lucide="log-in" aria-hidden="true"></i> Sign in</a>
+                    <a class="primary-button" href="index.html?modal=signup" data-auth-guest data-account-modal-trigger="signup"><i data-lucide="user-plus" aria-hidden="true"></i> Sign up</a>
+                    <span class="account-chip" data-auth-user hidden></span>
+                    <div class="more-menu-wrap">
+                        <button class="icon-button more-button" type="button" data-more-toggle aria-expanded="false">
+                            <i data-lucide="menu" aria-hidden="true"></i>
+                            <span>More</span>
+                        </button>
+                        <div class="more-menu" data-more-menu hidden>
+                            <a href="index.html?modal=signin" data-more-profile-link hidden><i data-lucide="user" aria-hidden="true"></i> Profile</a>
+                            <a href="#settings" data-more-settings-link data-guest-settings-trigger><i data-lucide="languages" aria-hidden="true"></i> Language</a>
+                            <button class="more-menu-item" type="button" data-more-logout data-logout hidden><i data-lucide="log-out" aria-hidden="true"></i> Logout</button>
+                        </div>
+                    </div>
+                </div>
+            </nav>
+        </header>
+
+        <div class="modal-backdrop account-modal-backdrop" data-account-modal="signin" aria-hidden="true">
+            <section class="account-modal" role="dialog" aria-modal="true" aria-labelledby="signinModalTitle" tabindex="-1">
+                <div class="account-modal-head">
+                    <div>
+                        <h2 id="signinModalTitle">Sign In</h2>
+                    </div>
+                    <button class="modal-close-x" type="button" data-account-modal-close aria-label="Close sign in">
+                        <i data-lucide="x" aria-hidden="true"></i>
+                    </button>
+                </div>
+                <form class="form-panel auth-panel account-modal-form" method="post" action="sign-in.html" data-login-form>
+                    <div class="form-grid single-column">
+                        <label>Email Address<input type="email" name="email" required></label>
+                        <label>Password<input type="password" name="password" maxlength="30" required></label>
+                    </div>
+                    <div class="form-actions">
+                        <button class="primary-button" type="submit"><i data-lucide="log-in" aria-hidden="true"></i> Sign in</button>
+                        <button class="forgot-password-link" type="button" data-forgot-password-open>Forgot password?</button>
+                    </div>
+                    <div class="notice" data-login-notice></div>
+                </form>
+            </section>
+        </div>
+
+        <div class="modal-backdrop account-modal-backdrop" data-account-modal="forgot-password" aria-hidden="true">
+            <section class="account-modal" role="dialog" aria-modal="true" aria-labelledby="forgotPasswordModalTitle" tabindex="-1">
+                <div class="account-modal-head">
+                    <div>
+                        <h2 id="forgotPasswordModalTitle">Forgot Password</h2>
+                    </div>
+                    <button class="modal-close-x" type="button" data-account-modal-close aria-label="Close forgot password">
+                        <i data-lucide="x" aria-hidden="true"></i>
+                    </button>
+                </div>
+                <form class="form-panel auth-panel account-modal-form password-reset-form" method="post" action="#" data-password-reset-form>
+                    <div data-password-reset-step="otp">
+                        <div class="form-grid single-column">
+                            <label>Enter Email<input type="email" name="email" placeholder="Enter your gmail" autocomplete="email" required></label>
+                            <div class="form-actions">
+                                <button class="ghost-button" type="button" data-password-reset-send-otp><i data-lucide="mail" aria-hidden="true"></i> Send Reset Link</button>
+                            </div>
+                        </div>
+                        <div class="password-reset-status" data-password-reset-otp-status hidden>
+                            <span class="password-reset-status-icon"><i data-lucide="check" aria-hidden="true"></i></span>
+                            <span>Password reset email sent to Gmail</span>
+                        </div>
+                    </div>
+
+                    <div data-password-reset-step="password" hidden>
+                        <div class="form-grid single-column">
+                            <label>New Password<input type="password" name="newPassword" minlength="9" maxlength="30" autocomplete="new-password" data-password-rules data-password-meter><small class="password-requirements" data-password-note>Password needs more than 8 characters and must have 1 uppercase, 1 lowercase, 1 symbol, and 1 number.</small><span class="password-strength" data-password-strength aria-live="polite"><span class="password-strength-title">Password Strength</span><span class="password-strength-status" data-password-strength-status></span><span class="password-strength-track" aria-hidden="true"><span data-password-strength-fill></span></span></span></label>
+                            <label>Confirm New Password<input type="password" name="confirmPassword" minlength="9" maxlength="30" autocomplete="new-password"></label>
+                        </div>
+                        <div class="form-actions">
+                            <button class="primary-button" type="button" data-password-reset-confirm><i data-lucide="key-round" aria-hidden="true"></i> Confirm Password</button>
+                        </div>
+                    </div>
+
+                    <div class="password-reset-success" data-password-reset-step="success" hidden>
+                        <span class="password-reset-success-icon"><i data-lucide="check" aria-hidden="true"></i></span>
+                        <h3 data-password-reset-success-title>Password reset email sent</h3><p>Open the email from Firebase and follow the link to create a new password.</p>
+                        <button class="primary-button" type="button" data-password-reset-back><i data-lucide="log-in" aria-hidden="true"></i> Back to Sign In</button>
+                    </div>
+                    <div class="notice" data-password-reset-notice></div>
+                </form>
+            </section>
+        </div>
+
+        <div class="modal-backdrop account-modal-backdrop" data-account-modal="pending-approval" aria-hidden="true">
+            <section class="account-modal" role="dialog" aria-modal="true" aria-labelledby="pendingApprovalModalTitle" tabindex="-1">
+                <div class="account-modal-head">
+                    <div>
+                        <h2 id="pendingApprovalModalTitle">Pending for approval.</h2>
+                        <p>Please wait for admin approval before signing in.</p>
+                    </div>
+                    <button class="modal-close-x" type="button" data-account-modal-close aria-label="Close pending approval">
+                        <i data-lucide="x" aria-hidden="true"></i>
+                    </button>
+                </div>
+            </section>
+        </div>
+
+        <div class="modal-backdrop account-modal-backdrop" data-account-modal="signup" aria-hidden="true">
+            <section class="account-modal" role="dialog" aria-modal="true" aria-labelledby="signupModalTitle" tabindex="-1">
+                <div class="account-modal-head">
+                    <div>
+                        <h2 id="signupModalTitle">Sign Up</h2>
+                        <p>Create a customer account.</p>
+                    </div>
+                    <button class="modal-close-x" type="button" data-account-modal-close aria-label="Close sign up">
+                        <i data-lucide="x" aria-hidden="true"></i>
+                    </button>
+                </div>
+                <form class="form-panel auth-panel account-modal-form" method="post" action="sign-up.html" data-customer-signup-form>
+                    <div class="form-grid single-column">
+                        <label>First Name<input type="text" name="firstName" autocomplete="given-name" required></label>
+                        <label>Last Name<input type="text" name="lastName" autocomplete="family-name" required></label>
+                        <label>Email Address<input type="email" name="email" placeholder="you@gmail.com" required></label>
+                        <label>Phone Number<input type="tel" name="phone" inputmode="numeric" maxlength="11" pattern="\d{11}" title="Enter exactly 11 digits" required></label>
+                        <div class="address-picker-field" data-address-picker-field>
+                            <label>Address<input type="text" name="address" placeholder="Street, Barangay, City/Municipal, Cebu" autocomplete="street-address" data-address-input required></label>
+                            <button class="ghost-button" type="button" data-location-picker-open><i data-lucide="map-pin" aria-hidden="true"></i> Choose Location</button>
+                            <input type="hidden" name="city" data-address-city>
+                            <input type="hidden" name="addressParts" data-address-parts>
+                        </div>
+                        <label>Password<input type="password" name="password" minlength="9" maxlength="30" autocomplete="new-password" data-password-rules data-password-meter required><small class="password-requirements" data-password-note>Password needs more than 8 characters and must have 1 uppercase, 1 lowercase, 1 symbol, and 1 number.</small><span class="password-strength" data-password-strength aria-live="polite"><span class="password-strength-title">Password Strength</span><span class="password-strength-status" data-password-strength-status></span><span class="password-strength-track" aria-hidden="true"><span data-password-strength-fill></span></span></span></label>
+                        <label>Confirm Password<input type="password" name="confirmPassword" minlength="9" maxlength="30" autocomplete="new-password" required></label>
+                    </div>
+                    <div class="form-actions">
+                        <button class="primary-button" type="submit"><i data-lucide="user-plus" aria-hidden="true"></i> Sign up</button>
+                    </div>
+                    <div class="notice" data-customer-signup-notice></div>
+                </form>
+            </section>
+        </div>
+
+        <div class="modal-backdrop account-modal-backdrop" data-account-modal="rider" aria-hidden="true">
+            <section class="account-modal account-modal-wide" role="dialog" aria-modal="true" aria-labelledby="riderModalTitle" tabindex="-1">
+                <div class="account-modal-head">
+                    <div>
+                        <h2 id="riderModalTitle">Rider Application</h2>
+                    </div>
+                    <button class="modal-close-x" type="button" data-account-modal-close aria-label="Close rider application">
+                        <i data-lucide="x" aria-hidden="true"></i>
+                    </button>
+                </div>
+                <form class="form-panel account-modal-form" method="post" action="rider-apply.html" enctype="multipart/form-data" data-rider-application-form>
+                    <div class="dashboard-heading">
+                        <div>
+                            <h2>Personal Information</h2>
+                        </div>
+                    </div>
+                    <div class="form-grid">
+                        <label>First Name<input type="text" name="firstName" autocomplete="given-name" required></label>
+                        <label>Last Name<input type="text" name="lastName" autocomplete="family-name" required></label>
+                        <label>Email Address<input type="email" name="email" required></label>
+                        <label>Phone Number<input type="tel" name="phone" inputmode="numeric" maxlength="11" pattern="\d{11}" title="Enter exactly 11 digits" required></label>
+                        <label>Password<input type="password" name="password" minlength="9" maxlength="30" autocomplete="new-password" data-password-rules data-password-meter required><small class="password-requirements" data-password-note>Password needs more than 8 characters and must have 1 uppercase, 1 lowercase, 1 symbol, and 1 number.</small><span class="password-strength" data-password-strength aria-live="polite"><span class="password-strength-title">Password Strength</span><span class="password-strength-status" data-password-strength-status></span><span class="password-strength-track" aria-hidden="true"><span data-password-strength-fill></span></span></span></label>
+                        <label>Confirm Password<input type="password" name="confirmPassword" minlength="9" maxlength="30" autocomplete="new-password" required><small class="field-help">Re-enter the same password to confirm your rider account.</small></label>
+                    </div>
+                    <div class="dashboard-heading form-subheading">
+                        <div>
+                            <h2>Delivery Information</h2>
+                        </div>
+                    </div>
+                    <div class="form-grid">
+                        <label>Vehicle Type<select name="vehicleType" required>
+                            <option value="">Select vehicle type</option>
+                            <option>Motorcycle</option>
+                            <option>Bicycle</option>
+                            <option>Car</option>
+                        </select></label>
+                        <div class="address-picker-field" data-address-picker-field>
+                            <label>Rider Address<input type="text" name="currentLocation" placeholder="Street, Barangay, City/Municipal, Cebu" autocomplete="street-address" data-address-input required></label>
+                            <button class="ghost-button" type="button" data-location-picker-open><i data-lucide="map-pin" aria-hidden="true"></i> Choose Location</button>
+                            <input type="hidden" name="addressParts" data-address-parts>
+                        </div>
+                        <!-- TODO: Upload this file with Firebase Storage in a later phase; Phase 1 saves validIdUrl/licenseUrl as empty strings. -->
+                        <label>Valid ID / Driver's License<input type="file" name="validId" accept="image/*" data-image-upload required><small class="field-help">Upload an image file.</small></label>
+                    </div>
+                    <div class="form-actions">
+                        <button class="primary-button" type="submit"><i data-lucide="send" aria-hidden="true"></i> Submit Rider Application</button>
+                    </div>
+                    <div class="notice" data-rider-application-notice></div>
+                </form>
+            </section>
+        </div>
+
+        <div class="modal-backdrop account-modal-backdrop" data-account-modal="merchant" aria-hidden="true">
+            <section class="account-modal account-modal-wide" role="dialog" aria-modal="true" aria-labelledby="merchantModalTitle" tabindex="-1">
+                <div class="account-modal-head">
+                    <div>
+                        <h2 id="merchantModalTitle">Merchant Application</h2>
+                        <p>Your merchant account stays pending until honestbee validates your details.</p>
+                    </div>
+                    <button class="modal-close-x" type="button" data-account-modal-close aria-label="Close merchant application">
+                        <i data-lucide="x" aria-hidden="true"></i>
+                    </button>
+                </div>
+                <form class="form-panel account-modal-form" method="post" action="seller-register.html" enctype="multipart/form-data" data-seller-registration-form>
+                    <div class="dashboard-heading">
+                        <div>
+                            <h2>Personal Information</h2>
+                        </div>
+                    </div>
+                    <div class="form-grid">
+                        <label>Owner First Name<input type="text" name="ownerFirstName" autocomplete="given-name" required></label>
+                        <label>Owner Last Name<input type="text" name="ownerLastName" autocomplete="family-name" required></label>
+                        <label>Owner Email Address<input type="email" name="ownerEmail" required></label>
+                        <label>Phone Number<input type="tel" name="phone" inputmode="numeric" maxlength="11" pattern="\d{11}" title="Enter exactly 11 digits" required></label>
+                        <label>Password<input type="password" name="password" minlength="9" maxlength="30" autocomplete="new-password" data-password-rules data-password-meter required><small class="password-requirements" data-password-note>Password needs more than 8 characters and must have 1 uppercase, 1 lowercase, 1 symbol, and 1 number.</small><span class="password-strength" data-password-strength aria-live="polite"><span class="password-strength-title">Password Strength</span><span class="password-strength-status" data-password-strength-status></span><span class="password-strength-track" aria-hidden="true"><span data-password-strength-fill></span></span></span></label>
+                        <label>Confirm Password<input type="password" name="confirmPassword" minlength="9" maxlength="30" autocomplete="new-password" required><small class="field-help">Re-enter the same password to confirm your merchant account.</small></label>
+                    </div>
+                    <div class="dashboard-heading form-subheading">
+                        <div>
+                            <h2>Business Information</h2>
+                        </div>
+                    </div>
+                    <div class="form-grid">
+                        <label>Merchant Name<input type="text" name="merchantName" required></label>
+                        <label>Merchant Type<select name="merchantType" required>
+                            <option value="">Select merchant type</option>
+                            <option>Grocery</option>
+                            <option>Food</option>
+                        </select></label>
+                        <div class="address-picker-field" data-address-picker-field>
+                            <label>Merchant Address<input type="text" name="storeAddress" placeholder="Street, Barangay, City/Municipal, Cebu" autocomplete="street-address" data-address-input required></label>
+                            <button class="ghost-button" type="button" data-location-picker-open><i data-lucide="map-pin" aria-hidden="true"></i> Choose Location</button>
+                            <input type="hidden" name="addressParts" data-address-parts>
+                        </div>
+                        <label>Opening Time<input type="time" name="businessOpenTime" value="08:00" required></label>
+                        <label>Closing Time<input type="time" name="businessCloseTime" value="21:00" required></label>
+                        <!-- TODO: Upload this file with Firebase Storage in a later phase; Phase 1 saves logoUrl/documentUrl as empty strings. -->
+                        <label>Business Permit / Proof of Merchant<input type="file" name="businessProof" accept="image/*" data-image-upload required><small class="field-help">Upload an image file.</small></label>
+                    </div>
+                    <div class="form-actions">
+                        <button class="primary-button" type="submit"><i data-lucide="send" aria-hidden="true"></i> Submit Merchant Application</button>
+                    </div>
+                    <div class="notice" data-seller-registration-notice></div>
+                </form>
+            </section>
+        </div>
+
+        <div class="modal-backdrop account-modal-backdrop" data-account-modal="profile" aria-hidden="true">
+            <section class="account-modal account-modal-profile" role="dialog" aria-modal="true" aria-labelledby="customerProfileModalTitle" tabindex="-1">
+                <div class="account-modal-head">
+                    <div>
+                        <h2 id="customerProfileModalTitle">Profile</h2>
+                    </div>
+                    <button class="modal-close-x" type="button" data-account-modal-close aria-label="Close profile">
+                        <i data-lucide="x" aria-hidden="true"></i>
+                    </button>
+                </div>
+                <div class="customer-profile-modal-content">
+                    <article class="settings-section account-settings customer-profile-section" data-settings-section="customer" hidden>
+                        <div class="settings-section-head">
+                            <h2>Profile</h2>
+                        </div>
+
+                        <div class="settings-card is-wide" data-profile-anchor="account-information">
+                            <h3>Account Information</h3>
+                            <div class="settings-fields four">
+                                <label>First Name<input type="text" data-account-field="firstName" placeholder="First name" autocomplete="given-name"></label>
+                                <label>Last Name<input type="text" data-account-field="lastName" placeholder="Last name" autocomplete="family-name"></label>
+                                <label>Email Address<input type="email" data-account-field="email" placeholder="Email address"></label>
+                                <label>Phone Number<input type="tel" data-account-field="phone" placeholder="09171234567" inputmode="numeric" maxlength="11" pattern="\d{11}" title="Enter exactly 11 digits"></label>
+                            </div>
+                            <div class="settings-card-actions">
+                                <span class="notice" data-settings-notice></span>
+                                <button class="primary-button" type="button" data-apply-settings="customer"><i data-lucide="check" aria-hidden="true"></i> Apply</button>
+                            </div>
+                        </div>
+
+                        <div class="settings-card is-wide" data-profile-anchor="delivery-addresses">
+                            <h3>Delivery Address</h3>
+                            <div class="customer-address-manager" data-address-manager>
+                                <div class="customer-address-list" data-address-list></div>
+                                <button class="ghost-button" type="button" data-address-add><i data-lucide="plus" aria-hidden="true"></i> Make New Address</button>
+                                <div class="address-picker-field address-editor" data-address-picker-field data-address-editor hidden>
+                                    <label>Address<input type="text" placeholder="Street, Barangay, City/Municipal, Cebu" autocomplete="street-address" data-address-input></label>
+                                    <button class="ghost-button" type="button" data-location-picker-open><i data-lucide="map-pin" aria-hidden="true"></i> Choose Location</button>
+                                    <input type="hidden" data-address-city>
+                                    <input type="hidden" data-address-parts>
+                                    <small class="field-help" data-address-preview>Street, Barangay, City/Municipal, Cebu</small>
+                                    <div class="address-editor-actions">
+                                        <button class="primary-button" type="button" data-address-save><i data-lucide="check" aria-hidden="true"></i> Save Address</button>
+                                        <button class="ghost-button" type="button" data-address-cancel><i data-lucide="x" aria-hidden="true"></i> Cancel</button>
+                                    </div>
+                                </div>
+                                <div class="customer-address-detail" data-address-detail hidden></div>
+                            </div>
+                        </div>
+
+                        <div class="settings-card" data-profile-anchor="payment-preferences">
+                            <h3>Payment Preferences</h3>
+                            <label class="check-row"><input type="checkbox" checked> Cash on Delivery</label>
+                            <label class="check-row"><input type="checkbox"> Card</label>
+                            <label class="check-row"><input type="checkbox"> GCash</label>
+                        </div>
+
+                        <div class="settings-card">
+                            <h3>Order Preferences</h3>
+                            <label>Allow substitutions<select><option>Yes</option><option>No</option></select></label>
+                            <label>Preferred delivery time<input type="time" data-account-field="preferredDeliveryTime"></label>
+                            <label>Delivery instructions<textarea placeholder="Leave notes for rider or shopper"></textarea></label>
+                        </div>
+
+                        <div class="settings-card">
+                            <h3>Notifications</h3>
+                            <label class="check-row"><input type="checkbox" checked> Order updates</label>
+                            <label class="check-row"><input type="checkbox"> Promotions</label>
+                            <label class="check-row"><input type="checkbox" checked> Delivery alerts</label>
+                        </div>
+
+                        <div class="settings-card">
+                            <h3>Privacy and Security</h3>
+                            <label>Current Password<input type="password" data-password-field="current" placeholder="Current password" maxlength="30" autocomplete="current-password"></label>
+                            <label>New Password<input type="password" data-password-field="new" placeholder="New password" minlength="9" maxlength="30" autocomplete="new-password" data-password-rules><small class="password-requirements" data-password-note>Password needs more than 8 characters and must have 1 uppercase, 1 lowercase, 1 symbol, and 1 number.</small></label>
+                            <label>Confirm New Password<input type="password" data-password-field="confirm" placeholder="Confirm new password" maxlength="30" autocomplete="new-password"></label>
+                            <div class="settings-card-actions">
+                                <span class="notice" data-settings-notice></span>
+                                <button class="primary-button" type="button" data-apply-settings="customer"><i data-lucide="check" aria-hidden="true"></i> Apply</button>
+                            </div>
+                        </div>
+                    </article>
+
+                    <article class="settings-section account-settings customer-profile-section" data-settings-section="seller" hidden>
+                        <div class="settings-section-head">
+                            <h2>Merchant Profile</h2>
+                        </div>
+
+                        <div class="settings-card is-wide" data-profile-anchor="owner-information">
+                            <h3>Owner Information</h3>
+                            <div class="settings-fields four">
+                                <label>Owner First Name<input type="text" data-account-field="firstName" placeholder="Owner first name" autocomplete="given-name"></label>
+                                <label>Owner Last Name<input type="text" data-account-field="lastName" placeholder="Owner last name" autocomplete="family-name"></label>
+                                <label>Owner Email Address<input type="email" data-account-field="email" placeholder="Owner email address"></label>
+                                <label>Phone Number<input type="tel" data-account-field="phone" placeholder="09171234567" inputmode="numeric" maxlength="11" pattern="\d{11}" title="Enter exactly 11 digits"></label>
+                            </div>
+                            <div class="settings-card-actions">
+                                <span class="notice" data-settings-notice></span>
+                                <button class="primary-button" type="button" data-apply-settings="seller"><i data-lucide="check" aria-hidden="true"></i> Apply Changes</button>
+                            </div>
+                        </div>
+
+                        <div class="settings-card is-wide" data-profile-anchor="merchant-information">
+                            <h3>Merchant Information</h3>
+                            <div class="settings-fields four">
+                                <label>Merchant Name<input type="text" data-account-field="storeName" placeholder="Merchant name"></label>
+                                <label>Merchant Type<select data-account-field="merchantType"><option>Grocery</option><option>Food</option></select></label>
+                                <label>Preparation Time<input type="time" data-account-field="preparationTime"></label>
+                                <label data-profile-anchor="store-status">Store Status<select data-account-field="storeStatus"><option>Open</option><option>Closed</option></select></label>
+                            </div>
+                            <div class="address-picker-field merchant-address-picker" data-address-picker-field>
+                                <label>Merchant Address<input type="text" data-account-field="storeAddress" placeholder="Street, Barangay, City/Municipal, Cebu" autocomplete="street-address" data-address-input></label>
+                                <button class="ghost-button" type="button" data-location-picker-open><i data-lucide="map-pin" aria-hidden="true"></i> Choose Location</button>
+                                <input type="hidden" data-address-parts>
+                                <small class="field-help" data-address-preview>Choose your real store address in Cebu.</small>
+                            </div>
+                            <div class="day-selector-field" data-profile-anchor="available-days">
+                                <span>Available Days</span>
+                                <div class="day-selector" data-account-field="availableDays" role="group" aria-label="Available Days">
+                                    <label><input type="checkbox" value="Monday"> Mon</label>
+                                    <label><input type="checkbox" value="Tuesday"> Tue</label>
+                                    <label><input type="checkbox" value="Wednesday"> Wed</label>
+                                    <label><input type="checkbox" value="Thursday"> Thu</label>
+                                    <label><input type="checkbox" value="Friday"> Fri</label>
+                                    <label><input type="checkbox" value="Saturday"> Sat</label>
+                                    <label><input type="checkbox" value="Sunday"> Sun</label>
+                                </div>
+                            </div>
+                            <div class="settings-card-actions">
+                                <span class="notice" data-settings-notice></span>
+                                <button class="primary-button" type="button" data-apply-settings="seller"><i data-lucide="check" aria-hidden="true"></i> Apply</button>
+                            </div>
+                        </div>
+
+                        <div class="settings-card">
+                            <h3>Application Status</h3>
+                            <p data-seller-settings-status>Approval Status: Pending/Approved/Rejected</p>
+                        </div>
+
+                        <div class="settings-card">
+                            <h3>Account Security</h3>
+                            <label>Current Password<input type="password" data-password-field="current" placeholder="Current password" maxlength="30" autocomplete="current-password"></label>
+                            <label>New Password<input type="password" data-password-field="new" placeholder="New password" minlength="9" maxlength="30" autocomplete="new-password" data-password-rules><small class="password-requirements" data-password-note>Password needs more than 8 characters and must have 1 uppercase, 1 lowercase, 1 symbol, and 1 number.</small></label>
+                            <label>Confirm New Password<input type="password" data-password-field="confirm" placeholder="Confirm new password" maxlength="30" autocomplete="new-password"></label>
+                            <div class="settings-card-actions">
+                                <span class="notice" data-settings-notice></span>
+                                <button class="primary-button" type="button" data-apply-settings="seller"><i data-lucide="check" aria-hidden="true"></i> Apply</button>
+                            </div>
+                        </div>
+                    </article>
+
+                    <article class="settings-section account-settings customer-profile-section" data-settings-section="rider" hidden>
+                        <div class="settings-section-head">
+                            <h2>Rider Profile</h2>
+                        </div>
+
+                        <div class="settings-card is-wide" data-profile-anchor="rider-information">
+                            <h3>Rider Information</h3>
+                            <div class="settings-fields four">
+                                <label>First Name<input type="text" data-account-field="firstName" placeholder="First name" autocomplete="given-name"></label>
+                                <label>Last Name<input type="text" data-account-field="lastName" placeholder="Last name" autocomplete="family-name"></label>
+                                <label>Email Address<input type="email" data-account-field="email" placeholder="Email address"></label>
+                                <label>Phone Number<input type="tel" data-account-field="phone" placeholder="09171234567" inputmode="numeric" maxlength="11" pattern="\d{11}" title="Enter exactly 11 digits"></label>
+                            </div>
+                            <div class="settings-card-actions">
+                                <span class="notice" data-settings-notice></span>
+                                <button class="primary-button" type="button" data-apply-settings="rider"><i data-lucide="check" aria-hidden="true"></i> Apply Changes</button>
+                            </div>
+                        </div>
+
+                        <div class="settings-card is-wide" data-profile-anchor="vehicle-details">
+                            <h3>Delivery Information</h3>
+                            <div class="settings-fields four">
+                                <label data-profile-anchor="vehicle-type">Vehicle Type<select data-account-field="vehicleType" disabled aria-readonly="true" class="readonly-registered-field"><option>Motorcycle</option><option>Bicycle</option><option>Car</option></select><small class="field-help">Vehicle type is locked from your rider registration.</small></label>
+                                <label>Maximum Active Orders<input type="number" min="1" value="1" data-account-field="maxActiveOrders"></label>
+                            </div>
+                            <div class="address-picker-field rider-location-picker" data-address-picker-field data-profile-anchor="current-location">
+                                <label>Current Location<input type="text" data-account-field="currentLocation" placeholder="Street, Barangay, City/Municipal, Cebu" autocomplete="street-address" data-address-input></label>
+                                <button class="ghost-button" type="button" data-location-picker-open><i data-lucide="map-pin" aria-hidden="true"></i> Choose Location</button>
+                                <input type="hidden" data-address-parts>
+                                <small class="field-help" data-address-preview>Choose your current rider location in Cebu.</small>
+                            </div>
+                            <div class="settings-card-actions">
+                                <span class="notice" data-settings-notice></span>
+                                <button class="primary-button" type="button" data-apply-settings="rider"><i data-lucide="check" aria-hidden="true"></i> Apply</button>
+                            </div>
+                        </div>
+
+                        <div class="settings-card" data-profile-anchor="rider-availability">
+                            <h3>Availability</h3>
+                            <label>Available / Unavailable<select><option>Available</option><option>Unavailable</option></select></label>
+                            <label>Current delivery area<input type="text" placeholder="Current delivery area"></label>
+                        </div>
+
+                        <div class="settings-card">
+                            <h3>Employment Status</h3>
+                            <p data-rider-settings-status>Employment Status: Pending/Active/Inactive</p>
+                        </div>
+
+                        <div class="settings-card">
+                            <h3>Account Security</h3>
+                            <label>Current Password<input type="password" data-password-field="current" placeholder="Current password" maxlength="30" autocomplete="current-password"></label>
+                            <label>New Password<input type="password" data-password-field="new" placeholder="New password" minlength="9" maxlength="30" autocomplete="new-password" data-password-rules><small class="password-requirements" data-password-note>Password needs more than 8 characters and must have 1 uppercase, 1 lowercase, 1 symbol, and 1 number.</small></label>
+                            <label>Confirm New Password<input type="password" data-password-field="confirm" placeholder="Confirm new password" maxlength="30" autocomplete="new-password"></label>
+                            <div class="settings-card-actions">
+                                <span class="notice" data-settings-notice></span>
+                                <button class="primary-button" type="button" data-apply-settings="rider"><i data-lucide="check" aria-hidden="true"></i> Apply</button>
+                            </div>
+                        </div>
+                    </article>
+
+                    <article class="settings-section account-settings customer-profile-section" data-settings-section="admin" hidden>
+                        <div class="settings-section-head">
+                            <h2>Admin Profile</h2>
+                        </div>
+
+                        <div class="settings-card is-wide" data-profile-anchor="admin-information">
+                            <h3>Admin Information</h3>
+                            <label>Admin ID<input type="text" data-account-field="adminId" placeholder="Admin ID" readonly></label>
+                        </div>
+
+                        <div class="settings-card">
+                            <h3>Change Password</h3>
+                            <label>Current Password<input type="password" data-password-field="current" placeholder="Current password" maxlength="30" autocomplete="current-password"></label>
+                            <label>New Password<input type="password" data-password-field="new" placeholder="New password" minlength="9" maxlength="30" autocomplete="new-password" data-password-rules><small class="password-requirements" data-password-note>Password needs more than 8 characters and must have 1 uppercase, 1 lowercase, 1 symbol, and 1 number.</small></label>
+                            <label>Confirm New Password<input type="password" data-password-field="confirm" placeholder="Confirm new password" maxlength="30" autocomplete="new-password"></label>
+                            <div class="settings-card-actions">
+                                <span class="notice" data-settings-notice></span>
+                                <button class="primary-button" type="button" data-apply-settings="admin"><i data-lucide="check" aria-hidden="true"></i> Apply</button>
+                            </div>
+                        </div>
+                    </article>
+                </div>
+            </section>
+        </div>
+
+        <div class="modal-backdrop account-modal-backdrop settings-drawer-backdrop" data-account-modal="settings" aria-hidden="true">
+            <section class="account-modal settings-drawer" role="dialog" aria-modal="true" aria-labelledby="guestSettingsTitle" tabindex="-1">
+                <div class="account-modal-head">
+                    <div>
+                        <h2 id="guestSettingsTitle">Language</h2>
+                    </div>
+                    <button class="modal-close-x" type="button" data-account-modal-close aria-label="Close language">
+                        <i data-lucide="x" aria-hidden="true"></i>
+                    </button>
+                </div>
+                <div class="settings-drawer-content">
+                    <section class="settings-card settings-drawer-card">
+                        <h3>Language</h3>
+                        <select data-language-setting data-language-auto aria-label="Language">
+                            <option value="english">English</option>
+                            <option value="filipino">Filipino</option>
+                            <option value="cebuano">Cebuano/Bisaya</option>
+                        </select>
+                    </section>
+                </div>
+            </section>
+        </div>
+
+        <div class="modal-backdrop location-picker-backdrop" data-location-modal hidden aria-hidden="true">
+            <section class="account-modal account-modal-wide location-picker-modal" role="dialog" aria-modal="true" aria-labelledby="locationPickerTitle" tabindex="-1">
+                <div class="account-modal-head">
+                    <div>
+                        <h2 id="locationPickerTitle">Choose Location</h2>
+                    </div>
+                    <button class="modal-close-x" type="button" data-location-close aria-label="Close location picker">
+                        <i data-lucide="x" aria-hidden="true"></i>
+                    </button>
+                </div>
+                <div class="location-picker-body">
+                    <div class="location-search-row">
+                        <input type="text" data-location-search placeholder="Search Cebu address">
+                        <button class="ghost-button" type="button" data-location-search-button><i data-lucide="search" aria-hidden="true"></i> Search</button>
+                    </div>
+                    <div class="location-map" data-location-map></div>
+                    <div class="location-summary" data-location-summary>Choose a point in Cebu to fill the address.</div>
+                    <div class="location-actions">
+                        <button class="ghost-button" type="button" data-location-close><i data-lucide="x" aria-hidden="true"></i> Cancel</button>
+                        <button class="primary-button" type="button" data-location-use><i data-lucide="map-pin" aria-hidden="true"></i> Use Location</button>
+                    </div>
+                </div>
+            </section>
+        </div>
+        <main class="dashboard-main">
+            <section class="dashboard-hero">
+                <div>
+                    <h1>Deals for today</h1>
+                    <p>Promotions for grocery baskets, lunch orders, and scheduled delivery.</p>
+                </div>
+                <div class="hero-actions">
+                    <a class="primary-button" href="index.html?view=stores#stores"><i data-lucide="shopping-basket" aria-hidden="true"></i> Shop stores</a>
+                    <a class="ghost-button" href="customer-dashboard.html"><i data-lucide="layout-dashboard" aria-hidden="true"></i> Dashboard</a>
+                </div>
+            </section>
+
+            <section class="section">
+                <div class="section-inner">
+                    <div class="deal-grid">
+                        <article class="deal-card">
+                            <span>Grocery bundle</span>
+                            <h3>Save PHP 150 on fresh produce over PHP 1,200</h3>
+                            <p>Best for weekly fruit, vegetables, dairy, and pantry restocks.</p>
+                        </article>
+                        <article class="deal-card food">
+                            <span>Food delivery</span>
+                            <h3>Free drink with selected lunch sets</h3>
+                            <p>Available from Bee Kitchen and Lazy Loaf Kitchen.</p>
+                        </article>
+                        <article class="deal-card delivery">
+                            <span>Delivery window</span>
+                            <h3>Schedule later and lower the delivery fee</h3>
+                            <p>Pick a time slot that works for home or office deliveries.</p>
+                        </article>
+                    </div>
+                </div>
+            </section>
+        </main>
+        <footer class="site-footer role-aware-footer footer-server-guest" aria-label="honestbee footer">
+            <div class="footer-inner footer-layout role-footer role-footer--guest">
+                <section class="footer-brand-panel" aria-label="honestbee overview">
+                    <a class="brand footer-brand" href="index.html" aria-label="honestbee home">
+                        <span class="bee-mark" aria-hidden="true"><span class="bee-body"></span></span>
+                        <span>honestbee</span>
+                    </a>
+                    <p class="footer-tagline">Fresh groceries, food favorites, and daily essentials delivered by trusted Cebu partners.</p>
+                    <div class="footer-cta-row" aria-label="Footer actions">
+                        <a class="footer-cta footer-cta-primary" href="index.html#stores"><i data-lucide="store" aria-hidden="true"></i> Browse Stores</a>
+                        <a class="footer-cta" href="index.html?modal=signup" data-account-modal-trigger="signup"><i data-lucide="user-plus" aria-hidden="true"></i> Create Account</a>
+                    </div>
+                </section>
+
+                <nav class="footer-links" aria-label="Guest quick links">
+                    <h3>Explore</h3>
+                    <a href="index.html#stores">Stores</a>
+                    <a href="index.html#deals">Deals</a>
+                    <a href="index.html?modal=signin" data-account-modal-trigger="signin">Track an Order</a>
+                    <a href="index.html?modal=signup" data-account-modal-trigger="signup">Create Account</a>
+                </nav>
+
+                <nav class="footer-links" aria-label="Guest partner links">
+                    <h3>Partner With Us</h3>
+                    <a href="index.html?modal=merchant" data-account-modal-trigger="merchant">Apply as Merchant</a>
+                    <a href="index.html?modal=rider" data-account-modal-trigger="rider">Apply as Rider</a>
+                    <a href="sign-in.html">Merchant Login</a>
+                    <a href="sign-in.html">Rider Login</a>
+                </nav>
+
+                <section class="footer-info-card" aria-label="Guest service details">
+                    <h3>Need Help?</h3>
+                    <p><i data-lucide="clock" aria-hidden="true"></i> Daily service: 8:00 AM - 9:00 PM</p>
+                    <p><i data-lucide="map-pin" aria-hidden="true"></i> Serving selected Cebu areas</p>
+                    <p><i data-lucide="wallet" aria-hidden="true"></i> Cash and GCash supported</p>
+                    <div class="footer-help-actions">
+                        <a href="index.html?modal=signin" data-account-modal-trigger="signin">Sign in for help</a>
+                    </div>
+                </section>
+            </div>
+
+            <div class="footer-inner footer-layout role-footer role-footer--customer">
+                <section class="footer-brand-panel footer-role-card" aria-label="Customer footer overview">
+                    <span class="footer-role-pill"><i data-lucide="shopping-bag" aria-hidden="true"></i> Customer Account</span>
+                    <a class="brand footer-brand" href="customer-dashboard.html" aria-label="customer dashboard">
+                        <span class="bee-mark" aria-hidden="true"><span class="bee-body"></span></span>
+                        <span>honestbee</span>
+                    </a>
+                    <p class="footer-tagline">Your grocery dashboard for browsing stores, checking cart items, and monitoring recent orders.</p>
+                    <div class="footer-cta-row" aria-label="Customer footer actions">
+                        <a class="footer-cta footer-cta-primary" href="customer-dashboard.html#stores" data-footer-view-link data-footer-role-target="customer" data-footer-view="stores"><i data-lucide="store" aria-hidden="true"></i> Shop Stores</a>
+                        <a class="footer-cta" href="customer-dashboard.html#cart" data-footer-view-link data-footer-role-target="customer" data-footer-view="cart"><i data-lucide="shopping-cart" aria-hidden="true"></i> View Cart</a>
+                    </div>
+                </section>
+
+                <nav class="footer-links" aria-label="Customer quick links">
+                    <h3>Customer Tools</h3>
+                    <a href="customer-dashboard.html#dashboard" data-footer-view-link data-footer-role-target="customer" data-footer-view="dashboard">Current Order</a>
+                    <a href="customer-dashboard.html#stores" data-footer-view-link data-footer-role-target="customer" data-footer-view="stores">Stores</a>
+                    <a href="customer-dashboard.html#cart" data-footer-view-link data-footer-role-target="customer" data-footer-view="cart">Cart</a>
+                    <a href="customer-dashboard.html#orders" data-footer-view-link data-footer-role-target="customer" data-footer-view="orders">Recent Orders</a>
+                </nav>
+
+                <nav class="footer-links" aria-label="Customer support links">
+                    <h3>Order Support</h3>
+                    <a href="customer-dashboard.html#orders" data-footer-view-link data-footer-role-target="customer" data-footer-view="orders">Order Status</a>
+                    <a href="customer-dashboard.html#orders" data-footer-view-link data-footer-role-target="customer" data-footer-view="orders">Ratings & Refunds</a>
+                    <a href="#profile" data-account-modal-trigger="profile" data-profile-focus="delivery-addresses">Delivery Addresses</a>
+                    <a href="#profile" data-account-modal-trigger="profile" data-profile-focus="payment-preferences">Payment Preferences</a>
+                </nav>
+
+                <section class="footer-info-card" aria-label="Customer account details">
+                    <h3>For Customers</h3>
+                    <p><i data-lucide="map-pin" aria-hidden="true"></i> Manage delivery addresses before checkout.</p>
+                    <p><i data-lucide="receipt-text" aria-hidden="true"></i> View active and completed orders from your dashboard.</p>
+                    <p><i data-lucide="star" aria-hidden="true"></i> Rate delivered orders or request help when needed.</p>
+                    <div class="footer-help-actions">
+                        <a href="#profile" data-account-modal-trigger="profile" data-profile-focus="account-information">Open Profile</a>
+                    </div>
+                </section>
+            </div>
+
+            <div class="footer-inner footer-layout role-footer role-footer--seller">
+                <section class="footer-brand-panel footer-role-card" aria-label="Merchant footer overview">
+                    <span class="footer-role-pill"><i data-lucide="store" aria-hidden="true"></i> Merchant Account</span>
+                    <a class="brand footer-brand" href="seller-dashboard.html" aria-label="merchant dashboard">
+                        <span class="bee-mark" aria-hidden="true"><span class="bee-body"></span></span>
+                        <span>honestbee</span>
+                    </a>
+                    <p class="footer-tagline">Manage your store status, product listings, customer orders, sales, and merchant profile details.</p>
+                    <div class="footer-cta-row" aria-label="Merchant footer actions">
+                        <a class="footer-cta footer-cta-primary" href="seller-dashboard.html#product-list" data-footer-view-link data-footer-role-target="seller" data-footer-view="product-list"><i data-lucide="package" aria-hidden="true"></i> Product List</a>
+                        <a class="footer-cta" href="seller-dashboard.html#sales" data-footer-view-link data-footer-role-target="seller" data-footer-view="sales"><i data-lucide="chart-no-axes-combined" aria-hidden="true"></i> Sales</a>
+                    </div>
+                </section>
+
+                <nav class="footer-links" aria-label="Merchant quick links">
+                    <h3>Merchant Tools</h3>
+                    <a href="seller-dashboard.html#dashboard" data-footer-view-link data-footer-role-target="seller" data-footer-view="dashboard">Merchant Dashboard</a>
+                    <a href="seller-dashboard.html#add-product" data-footer-view-link data-footer-role-target="seller" data-footer-view="add-product">Add Product</a>
+                    <a href="seller-dashboard.html#product-list" data-footer-view-link data-footer-role-target="seller" data-footer-view="product-list">Product List</a>
+                    <a href="seller-dashboard.html#order-logs" data-footer-view-link data-footer-role-target="seller" data-footer-view="order-logs">Order Logs</a>
+                </nav>
+
+                <nav class="footer-links" aria-label="Merchant management links">
+                    <h3>Store Management</h3>
+                    <a href="seller-dashboard.html#sales" data-footer-view-link data-footer-role-target="seller" data-footer-view="sales">Full Sales Details</a>
+                    <a href="#profile" data-account-modal-trigger="profile" data-profile-focus="merchant-information">Merchant Profile</a>
+                    <a href="#profile" data-account-modal-trigger="profile" data-profile-focus="store-status">Store Status</a>
+                    <a href="#profile" data-account-modal-trigger="profile" data-profile-focus="available-days">Available Days</a>
+                </nav>
+
+                <section class="footer-info-card" aria-label="Merchant account details">
+                    <h3>For Merchants</h3>
+                    <p><i data-lucide="toggle-left" aria-hidden="true"></i> Keep your store Open or Closed based on availability.</p>
+                    <p><i data-lucide="image" aria-hidden="true"></i> Upload clear product photos for customer browsing.</p>
+                    <p><i data-lucide="clock" aria-hidden="true"></i> Update preparation time and available days in profile.</p>
+                    <div class="footer-help-actions">
+                        <a href="#profile" data-account-modal-trigger="profile" data-profile-focus="merchant-information">Update Store Info</a>
+                    </div>
+                </section>
+            </div>
+
+            <div class="footer-inner footer-layout role-footer role-footer--rider">
+                <section class="footer-brand-panel footer-role-card" aria-label="Rider footer overview">
+                    <span class="footer-role-pill"><i data-lucide="bike" aria-hidden="true"></i> Rider Account</span>
+                    <a class="brand footer-brand" href="rider-dashboard.html" aria-label="rider dashboard">
+                        <span class="bee-mark" aria-hidden="true"><span class="bee-body"></span></span>
+                        <span>honestbee</span>
+                    </a>
+                    <p class="footer-tagline">Your delivery workspace for assigned orders, earnings, order logs, and current rider location.</p>
+                    <div class="footer-cta-row" aria-label="Rider footer actions">
+                        <a class="footer-cta footer-cta-primary" href="rider-dashboard.html#orders" data-footer-view-link data-footer-role-target="rider" data-footer-view="orders"><i data-lucide="package-check" aria-hidden="true"></i> Orders</a>
+                        <a class="footer-cta" href="rider-dashboard.html#earnings" data-footer-view-link data-footer-role-target="rider" data-footer-view="earnings"><i data-lucide="wallet" aria-hidden="true"></i> Earnings</a>
+                    </div>
+                </section>
+
+                <nav class="footer-links" aria-label="Rider quick links">
+                    <h3>Rider Tools</h3>
+                    <a href="rider-dashboard.html#dashboard" data-footer-view-link data-footer-role-target="rider" data-footer-view="dashboard">Rider Dashboard</a>
+                    <a href="rider-dashboard.html#orders" data-footer-view-link data-footer-role-target="rider" data-footer-view="orders">Assigned Orders</a>
+                    <a href="rider-dashboard.html#earnings" data-footer-view-link data-footer-role-target="rider" data-footer-view="earnings">Earnings</a>
+                    <a href="rider-dashboard.html#order-logs" data-footer-view-link data-footer-role-target="rider" data-footer-view="order-logs">Order Logs</a>
+                </nav>
+
+                <nav class="footer-links" aria-label="Rider profile links">
+                    <h3>Rider Profile</h3>
+                    <a href="#profile" data-account-modal-trigger="profile" data-profile-focus="current-location">Current Location</a>
+                    <a href="#profile" data-account-modal-trigger="profile" data-profile-focus="rider-information">Profile Information</a>
+                    <a href="#profile" data-account-modal-trigger="profile" data-profile-focus="vehicle-details">Vehicle Details</a>
+                    <a href="#profile" data-account-modal-trigger="profile" data-profile-focus="rider-availability">Availability</a>
+                </nav>
+
+                <section class="footer-info-card" aria-label="Rider account details">
+                    <h3>For Riders</h3>
+                    <p><i data-lucide="navigation" aria-hidden="true"></i> Update current location using Choose Location.</p>
+                    <p><i data-lucide="shield-check" aria-hidden="true"></i> Vehicle type stays locked from registration.</p>
+                    <p><i data-lucide="receipt-text" aria-hidden="true"></i> Completed deliveries appear in Order Logs.</p>
+                    <div class="footer-help-actions">
+                        <a href="#profile" data-account-modal-trigger="profile" data-profile-focus="rider-information">Update Rider Info</a>
+                    </div>
+                </section>
+            </div>
+
+            <div class="footer-inner footer-layout role-footer role-footer--admin">
+                <section class="footer-brand-panel footer-role-card" aria-label="Admin footer overview">
+                    <span class="footer-role-pill"><i data-lucide="shield-check" aria-hidden="true"></i> Admin Account</span>
+                    <a class="brand footer-brand" href="admin-dashboard.html" aria-label="admin dashboard">
+                        <span class="bee-mark" aria-hidden="true"><span class="bee-body"></span></span>
+                        <span>honestbee</span>
+                    </a>
+                    <p class="footer-tagline">Admin control area for reviewing accounts, monitoring order logs, and managing ratings or refunds.</p>
+                    <div class="footer-cta-row" aria-label="Admin footer actions">
+                        <a class="footer-cta footer-cta-primary" href="admin-dashboard.html#customers" data-footer-view-link data-footer-role-target="admin" data-footer-view="customers"><i data-lucide="users" aria-hidden="true"></i> Customer Accounts</a>
+                        <a class="footer-cta" href="admin-dashboard.html#issues" data-footer-view-link data-footer-role-target="admin" data-footer-view="issues"><i data-lucide="star" aria-hidden="true"></i> Ratings/Refunds</a>
+                    </div>
+                </section>
+
+                <nav class="footer-links" aria-label="Admin account links">
+                    <h3>Account Review</h3>
+                    <a href="admin-dashboard.html#customers" data-footer-view-link data-footer-role-target="admin" data-footer-view="customers">Customer Accounts</a>
+                    <a href="admin-dashboard.html#sellers" data-footer-view-link data-footer-role-target="admin" data-footer-view="sellers">Merchant Accounts</a>
+                    <a href="admin-dashboard.html#riders" data-footer-view-link data-footer-role-target="admin" data-footer-view="riders">Rider Accounts</a>
+                    <a href="admin-dashboard.html#orders" data-footer-view-link data-footer-role-target="admin" data-footer-view="orders">Order Logs</a>
+                </nav>
+
+                <nav class="footer-links" aria-label="Admin management links">
+                    <h3>Admin Tools</h3>
+                    <a href="admin-dashboard.html#issues" data-footer-view-link data-footer-role-target="admin" data-footer-view="issues">Ratings/Refunds</a>
+                    <a href="#profile" data-account-modal-trigger="profile" data-profile-focus="admin-information">Admin Settings</a>
+                    <a href="admin-dashboard.html#orders" data-footer-view-link data-footer-role-target="admin" data-footer-view="orders">Order Logs</a>
+                    <a href="admin-dashboard.html#customers" data-footer-view-link data-footer-role-target="admin" data-footer-view="customers">Customer Accounts</a>
+                </nav>
+
+                <section class="footer-info-card" aria-label="Admin account details">
+                    <h3>For Admin</h3>
+                    <p><i data-lucide="check-circle" aria-hidden="true"></i> Approve or reject pending partner accounts.</p>
+                    <p><i data-lucide="trash-2" aria-hidden="true"></i> Remove invalid ratings and order logs when needed.</p>
+                    <p><i data-lucide="activity" aria-hidden="true"></i> Monitor open stores, riders, customers, and orders.</p>
+                    <div class="footer-help-actions">
+                        <a href="admin-dashboard.html#orders" data-footer-view-link data-footer-role-target="admin" data-footer-view="orders">Review Logs</a>
+                    </div>
+                </section>
+            </div>
+
+            <div class="footer-bottom">
+                <div class="footer-bottom-inner">
+                    <p>&copy; 2026 honestbee. Built as a grocery and food delivery demo.</p>
+                    <div class="footer-socials" aria-label="Footer shortcuts">
+                        <a href="#top" aria-label="Back to top"><i data-lucide="arrow-up" aria-hidden="true"></i></a>
+                        <a class="footer-shortcut footer-shortcut--guest" href="index.html?modal=signin" data-account-modal-trigger="signin" aria-label="Open account"><i data-lucide="user" aria-hidden="true"></i></a>
+                        <a class="footer-shortcut footer-shortcut--customer" href="customer-dashboard.html#cart" data-footer-view-link data-footer-role-target="customer" data-footer-view="cart" aria-label="Open cart"><i data-lucide="shopping-cart" aria-hidden="true"></i></a>
+                        <a class="footer-shortcut footer-shortcut--seller" href="seller-dashboard.html#product-list" data-footer-view-link data-footer-role-target="seller" data-footer-view="product-list" aria-label="Open products"><i data-lucide="package" aria-hidden="true"></i></a>
+                        <a class="footer-shortcut footer-shortcut--rider" href="rider-dashboard.html#earnings" data-footer-view-link data-footer-role-target="rider" data-footer-view="earnings" aria-label="Open earnings"><i data-lucide="wallet" aria-hidden="true"></i></a>
+                        <a class="footer-shortcut footer-shortcut--admin" href="admin-dashboard.html#orders" data-footer-view-link data-footer-role-target="admin" data-footer-view="orders" aria-label="Open order logs"><i data-lucide="receipt-text" aria-hidden="true"></i></a>
+                    </div>
+                </div>
+            </div>
+        </footer>
+    </div>
+
+    <script>
+        window.honestbeeData = {
+            storeCatalogs: {"metro-ayala-cebu":{"name":"Metro Supermarket Ayala Cebu","type":"Grocery","meta":"Cebu grocery staples, fresh produce, meat, seafood, household goods","eta":"45-60 min","theme":"#0f7c42","logo":"Metro","logoImage":"assets/img/offline/metro-retail-logo.svg","products":[{"id":"metro-rice","type":"grocery","category":"Rice & Staples","name":"Ganador jasmine rice","merchant":"Metro Supermarket Ayala Cebu","price":365,"tag":"Staple","rating":"4.8","unit":"5 kg","image":"assets/img/offline/071-photo-1586201375761-83865001e31c.jpg","alt":"Bowl of white rice"},{"id":"metro-mango","type":"grocery","category":"Fresh Produce","name":"Cebu mangoes","merchant":"Metro Supermarket Ayala Cebu","price":180,"tag":"Local","rating":"4.9","unit":"1 kg","image":"assets/img/offline/047-photo-1553279768-865429fa0078.jpg","alt":"Fresh mangoes"},{"id":"metro-chicken","type":"grocery","category":"Meat & Seafood","name":"Fresh chicken thighs","merchant":"Metro Supermarket Ayala Cebu","price":220,"tag":"Fresh","rating":"4.6","unit":"1 kg","image":"assets/img/offline/081-photo-1604503468506-a8da13d82791.jpg","alt":"Raw chicken cuts"},{"id":"metro-eggs","type":"grocery","category":"Dairy & Eggs","name":"Large white eggs tray","merchant":"Metro Supermarket Ayala Cebu","price":205,"tag":"Breakfast","rating":"4.7","unit":"30 pcs","image":"assets/img/offline/013-and9gctli3-hwtfrnhngwjb0c9mcu3obksrbmrpkew.jpg","alt":"Large white eggs tray"},{"id":"metro-detergent","type":"grocery","category":"Household","name":"Laundry detergent refill","merchant":"Metro Supermarket Ayala Cebu","price":198,"tag":"Home","rating":"4.5","unit":"1 kg","image":"assets/img/offline/101-arielliquidw-downyfloralpassionrefill715g.jpg","alt":"Ariel laundry detergent refill pack"},{"id":"metro-biscuits","type":"grocery","category":"Snacks","name":"Assorted biscuit pack","merchant":"Metro Supermarket Ayala Cebu","price":145,"tag":"Snack","rating":"4.4","unit":"12 pack","image":"assets/img/offline/099-combo-9.jpg","alt":"Assorted biscuit pack"},{"id":"metro-milk","type":"grocery","category":"Dairy & Eggs","name":"Fresh milk carton","merchant":"Metro Supermarket Ayala Cebu","price":118,"tag":"Chilled","rating":"4.7","unit":"1 L","image":"assets/img/offline/053-photo-1563636619-e9143da7973b.jpg","alt":"Milk bottle and glass"},{"id":"metro-coffee","type":"grocery","category":"Drinks","name":"Instant coffee jar","merchant":"Metro Supermarket Ayala Cebu","price":174,"tag":"Coffee","rating":"4.6","unit":"200 g","image":"assets/img/offline/027-photo-1511920170033-f8396924c348.jpg","alt":"Coffee cup"},{"id":"metro-sardines","type":"grocery","category":"Canned Goods","name":"Tomato sardines pack","merchant":"Metro Supermarket Ayala Cebu","price":126,"tag":"Pantry","rating":"4.5","unit":"6 cans","image":"assets/img/offline/100-mega-sardines-in-tomato-sauce-pouch.jpg","alt":"Mega sardines in tomato sauce pouch"},{"id":"metro-toothpaste","type":"grocery","category":"Personal Care","name":"Family toothpaste twin pack","merchant":"Metro Supermarket Ayala Cebu","price":164,"tag":"Care","rating":"4.4","unit":"2 tubes","image":"assets/img/offline/012-and9gcrbnhwijkondmz08rwu0t4d5pdtnivlyj8ixw.jpg","alt":"Family toothpaste twin pack"}]},"sm-supermarket-cebu":{"name":"SM Supermarket Cebu","type":"Grocery","meta":"Mall grocery for pantry items, fresh food, frozen goods, personal care","eta":"Same day","theme":"#124fb3","logo":"SM","logoImage":"assets/img/offline/115-favicons.png","products":[{"id":"sm-pasta","type":"grocery","category":"Pantry","name":"Spaghetti pasta bundle","merchant":"SM Supermarket Cebu","price":132,"tag":"Pantry","rating":"4.5","unit":"1 kg","image":"assets/img/offline/046-photo-1551462147-ff29053bfc14.jpg","alt":"Dry pasta"},{"id":"sm-lettuce","type":"grocery","category":"Fresh","name":"Romaine lettuce","merchant":"SM Supermarket Cebu","price":155,"tag":"Fresh","rating":"4.6","unit":"250 g","image":"assets/img/offline/096-photo-1622206151226-18ca2c9ab4a1.jpg","alt":"Fresh lettuce"},{"id":"sm-fries","type":"grocery","category":"Frozen","name":"Frozen potato fries","merchant":"SM Supermarket Cebu","price":240,"tag":"Frozen","rating":"4.7","unit":"1 kg","image":"assets/img/offline/059-photo-1573080496219-bb080dd4f877.jpg","alt":"French fries"},{"id":"sm-shampoo","type":"grocery","category":"Personal Care","name":"Family shampoo bottle","merchant":"SM Supermarket Cebu","price":189,"tag":"Care","rating":"4.4","unit":"650 ml","image":"assets/img/offline/093-photo-1620916566398-39f1143ab7be.jpg","alt":"Shampoo bottle"},{"id":"sm-paper","type":"grocery","category":"Household","name":"Kitchen paper towels","merchant":"SM Supermarket Cebu","price":175,"tag":"Home","rating":"4.5","unit":"6 rolls","image":"assets/img/offline/069-photo-1585421514738-01798e348b17.jpg","alt":"Paper towels"},{"id":"sm-juice","type":"grocery","category":"Drinks","name":"Calamansi juice carton","merchant":"SM Supermarket Cebu","price":95,"tag":"Drink","rating":"4.3","unit":"1 L","image":"assets/img/offline/077-photo-1600271886742-f049cd451bba.jpg","alt":"Calamansi juice drink"},{"id":"sm-bread","type":"grocery","category":"Bakery","name":"White loaf bread","merchant":"SM Supermarket Cebu","price":92,"tag":"Bakery","rating":"4.5","unit":"1 loaf","image":"assets/img/offline/025-photo-1509440159596-0249088772ff.jpg","alt":"Loaf bread"},{"id":"sm-hotdog","type":"grocery","category":"Frozen","name":"Tender juicy hotdog","merchant":"SM Supermarket Cebu","price":178,"tag":"Frozen","rating":"4.6","unit":"500 g","image":"assets/img/offline/035-photo-1529692236671-f1f6cf9683ba.jpg","alt":"Hotdogs"},{"id":"sm-apples","type":"grocery","category":"Fresh","name":"Red apple pack","merchant":"SM Supermarket Cebu","price":210,"tag":"Fresh","rating":"4.7","unit":"6 pcs","image":"assets/img/offline/056-photo-1567306226416-28f0efdc88ce.jpg","alt":"Red apples"},{"id":"sm-dishwash","type":"grocery","category":"Household","name":"Dishwashing liquid refill","merchant":"SM Supermarket Cebu","price":142,"tag":"Home","rating":"4.4","unit":"800 ml","image":"assets/img/offline/070-photo-1585659722983-3a675dabf23d.jpg","alt":"Dish soap bottle"}]},"robinsons-supermarket-cebu":{"name":"Robinsons Supermarket Cebu","type":"Grocery","meta":"Wellness groceries, fresh picks, staples, dairy, and food-to-go","eta":"50-65 min","theme":"#139447","logo":"R","logoImage":"assets/img/offline/114-favicons.png","products":[{"id":"rob-fruitbox","type":"grocery","category":"Fresh","name":"Wellness fruit box","merchant":"Robinsons Supermarket Cebu","price":395,"tag":"Fresh","rating":"4.8","unit":"1 box","image":"assets/img/offline/090-photo-1610832958506-aa56368176cf.jpg","alt":"Fresh fruit box"},{"id":"rob-oats","type":"grocery","category":"Wellness","name":"Rolled oats pouch","merchant":"Robinsons Supermarket Cebu","price":210,"tag":"Healthy","rating":"4.5","unit":"1 kg","image":"assets/img/offline/092-photo-1615485290382-441e4d049cb5.jpg","alt":"Oats in bowl"},{"id":"rob-oil","type":"grocery","category":"Pantry","name":"Canola cooking oil","merchant":"Robinsons Supermarket Cebu","price":268,"tag":"Staple","rating":"4.7","unit":"1 L","image":"assets/img/offline/016-photo-1474979266404-7eaacbcd87c5.jpg","alt":"Cooking oil bottle"},{"id":"rob-yogurt","type":"grocery","category":"Dairy","name":"Low-fat yogurt cups","merchant":"Robinsons Supermarket Cebu","price":215,"tag":"Chilled","rating":"4.4","unit":"4 pack","image":"assets/img/offline/019-photo-1488477181946-6428a0291777.jpg","alt":"Yogurt cups"},{"id":"rob-chicken-meal","type":"food","category":"Food To Go","name":"Chicken rice meal","merchant":"Robinsons Supermarket Cebu","price":189,"tag":"Ready","rating":"4.6","unit":"1 meal","image":"assets/img/offline/076-photo-1598515214211-89d3c73ae83b.jpg","alt":"Chicken rice meal"},{"id":"rob-coffee","type":"grocery","category":"Drinks","name":"Cold brew coffee","merchant":"Robinsons Supermarket Cebu","price":125,"tag":"Coffee","rating":"4.5","unit":"330 ml","image":"assets/img/offline/014-photo-1461023058943-07fcbe16d735.jpg","alt":"Cold coffee"},{"id":"rob-granola","type":"grocery","category":"Wellness","name":"Honey granola cereal","merchant":"Robinsons Supermarket Cebu","price":248,"tag":"Healthy","rating":"4.6","unit":"500 g","image":"assets/img/offline/029-photo-1517093157656-b9eccef91cb1.jpg","alt":"Granola bowl"},{"id":"rob-salad","type":"food","category":"Food To Go","name":"Caesar salad bowl","merchant":"Robinsons Supermarket Cebu","price":225,"tag":"Ready","rating":"4.5","unit":"1 bowl","image":"assets/img/offline/037-photo-1540420773420-3366772f4999.jpg","alt":"Salad bowl"},{"id":"rob-tuna-can","type":"grocery","category":"Pantry","name":"Tuna flakes multipack","merchant":"Robinsons Supermarket Cebu","price":188,"tag":"Pantry","rating":"4.4","unit":"4 cans","image":"assets/img/offline/067-photo-1584269600464-37b1b58a9fe7.jpg","alt":"Canned goods"},{"id":"rob-soy-milk","type":"grocery","category":"Drinks","name":"Soy milk drink","merchant":"Robinsons Supermarket Cebu","price":138,"tag":"Drink","rating":"4.5","unit":"1 L","image":"assets/img/offline/061-photo-1576186726115-4d51596775d1.jpg","alt":"Milk drink"}]},"the-marketplace-cebu":{"name":"The Marketplace Cebu","type":"Grocery","meta":"Imported pantry, deli, cheese, bakery, and premium fresh goods","eta":"Same day","theme":"#6f3a94","logo":"MP","logoImage":"assets/img/offline/117-favicons.png","products":[{"id":"marketplace-cheese","type":"grocery","category":"Cheese","name":"Imported cheese wedge","merchant":"The Marketplace Cebu","price":360,"tag":"Deli","rating":"4.8","unit":"250 g","image":"assets/img/offline/017-photo-1486297678162-eb2a19b0a32d.jpg","alt":"Cheese wedge"},{"id":"marketplace-ham","type":"grocery","category":"Deli","name":"Smoked ham slices","merchant":"The Marketplace Cebu","price":295,"tag":"Deli","rating":"4.6","unit":"300 g","image":"assets/img/offline/033-photo-1524438418049-ab2acb7aa48f.jpg","alt":"Deli meat slices"},{"id":"marketplace-sauce","type":"grocery","category":"Imported Pantry","name":"Italian tomato sauce","merchant":"The Marketplace Cebu","price":235,"tag":"Imported","rating":"4.4","unit":"680 g","image":"assets/img/offline/015-photo-1472476443507-c7a5948772fc.jpg","alt":"Tomato sauce jar"},{"id":"marketplace-baguette","type":"grocery","category":"Bakery","name":"French baguette","merchant":"The Marketplace Cebu","price":150,"tag":"Bakery","rating":"4.5","unit":"1 pc","image":"assets/img/offline/044-photo-1549931319-a545dcf3bc73.jpg","alt":"Baguettes"},{"id":"marketplace-apples","type":"grocery","category":"Fresh","name":"Imported apples","merchant":"The Marketplace Cebu","price":245,"tag":"Fresh","rating":"4.7","unit":"1 kg","image":"assets/img/offline/052-photo-1560806887-1e4cd0b6cbd6.jpg","alt":"Red apples"},{"id":"marketplace-sparkling","type":"grocery","category":"Beverages","name":"Sparkling grape drink","merchant":"The Marketplace Cebu","price":320,"tag":"Drink","rating":"4.5","unit":"750 ml","image":"assets/img/offline/089-photo-1609951651556-5334e2706168.jpg","alt":"Sparkling drink"},{"id":"marketplace-pasta","type":"grocery","category":"Imported Pantry","name":"Truffle pasta sauce","merchant":"The Marketplace Cebu","price":410,"tag":"Imported","rating":"4.7","unit":"350 g","image":"assets/img/offline/015-photo-1472476443507-c7a5948772fc.jpg","alt":"Pasta sauce jar"},{"id":"marketplace-salmon","type":"grocery","category":"Seafood","name":"Norwegian salmon fillet","merchant":"The Marketplace Cebu","price":620,"tag":"Premium","rating":"4.8","unit":"400 g","image":"assets/img/offline/031-photo-1519708227418-c8fd9a32b7a2.jpg","alt":"Salmon fillet"},{"id":"marketplace-chocolate","type":"grocery","category":"Imported Snacks","name":"Dark chocolate bar","merchant":"The Marketplace Cebu","price":180,"tag":"Imported","rating":"4.6","unit":"100 g","image":"assets/img/offline/083-photo-1606312619070-d48b4c652a52.jpg","alt":"Chocolate bar"}]},"landers-cebu":{"name":"Landers Cebu","type":"Grocery","meta":"Warehouse club goods, bulk grocery, frozen food, bakery, and home care","eta":"Same day","theme":"#f6b21a","logo":"L","logoImage":"assets/img/offline/112-favicons.png","products":[{"id":"landers-chips","type":"grocery","category":"Bulk Grocery","name":"Party chips box","merchant":"Landers Cebu","price":495,"tag":"Bulk","rating":"4.6","unit":"24 pack","image":"assets/img/offline/095-photo-1621939514649-280e2ee25f60.jpg","alt":"Assorted snacks"},{"id":"landers-muffins","type":"grocery","category":"Bakery","name":"Blueberry muffin tray","merchant":"Landers Cebu","price":399,"tag":"Bakery","rating":"4.7","unit":"12 pcs","image":"assets/img/offline/087-photo-1607958996333-41aef7caefaa.jpg","alt":"Muffins"},{"id":"landers-steak","type":"grocery","category":"Meat","name":"Beef steak value pack","merchant":"Landers Cebu","price":1250,"tag":"Imported","rating":"4.8","unit":"1 kg","image":"assets/img/offline/045-photo-1551028150-64b9f398f678.jpg","alt":"Steak cuts"},{"id":"landers-icecream","type":"grocery","category":"Frozen","name":"Vanilla ice cream tub","merchant":"Landers Cebu","price":520,"tag":"Frozen","rating":"4.5","unit":"1.5 L","image":"assets/img/offline/022-photo-1501443762994-82bd5dace89a.jpg","alt":"Ice cream scoops"},{"id":"landers-laundry","type":"grocery","category":"Household","name":"Fabric conditioner gallon","merchant":"Landers Cebu","price":390,"tag":"Home","rating":"4.4","unit":"3.8 L","image":"assets/img/offline/098-photo-1626806819282-2c1dc01a5e0c.jpg","alt":"Laundry bottle"},{"id":"landers-petfood","type":"grocery","category":"Pet Care","name":"Bulk dry dog food","merchant":"Landers Cebu","price":1190,"tag":"Pet","rating":"4.6","unit":"8 kg","image":"assets/img/offline/072-photo-1589924691995-400dc9ecc119.jpg","alt":"Dog food bowl"},{"id":"landers-water","type":"grocery","category":"Bulk Grocery","name":"Bottled water case","merchant":"Landers Cebu","price":285,"tag":"Bulk","rating":"4.6","unit":"24 bottles","image":"assets/img/offline/032-photo-1523362628745-0c100150b504.jpg","alt":"Bottled water"},{"id":"landers-pizza","type":"food","category":"Food To Go","name":"Pepperoni pizza whole","merchant":"Landers Cebu","price":699,"tag":"Ready","rating":"4.8","unit":"18 inch","image":"assets/img/offline/075-photo-1594007654729-407eedc4be65.jpg","alt":"Pepperoni pizza"},{"id":"landers-cheese","type":"grocery","category":"Dairy","name":"Cheddar cheese block","merchant":"Landers Cebu","price":450,"tag":"Bulk","rating":"4.7","unit":"1 kg","image":"assets/img/offline/017-photo-1486297678162-eb2a19b0a32d.jpg","alt":"Cheese block"}]},"carbon-public-market":{"name":"Carbon Public Market","type":"Grocery","meta":"Cebu public market produce, fruits, vegetables, meat, seafood, dried goods","eta":"Early morning","theme":"#d76b19","logo":"Carbon","logoImage":"assets/img/offline/110-favicons.png","products":[{"id":"carbon-tomato","type":"grocery","category":"Vegetables","name":"Kamatis tomato","merchant":"Carbon Public Market","price":84,"tag":"Market","rating":"4.6","unit":"500 g","image":"assets/img/offline/074-photo-1592924357228-91a4daadcfea.jpg","alt":"Fresh tomatoes"},{"id":"carbon-banana","type":"grocery","category":"Fruits","name":"Banana lacatan","merchant":"Carbon Public Market","price":95,"tag":"Fruit","rating":"4.6","unit":"1 kg","image":"assets/img/offline/080-photo-1603833665858-e61d17a86224.jpg","alt":"Bananas"},{"id":"carbon-liempo","type":"grocery","category":"Meat","name":"Pork liempo cut","merchant":"Carbon Public Market","price":180,"tag":"Market cut","rating":"4.5","unit":"500 g","image":"assets/img/offline/079-photo-1603048297172-c92544798d5a.jpg","alt":"Pork belly cut"},{"id":"carbon-galunggong","type":"grocery","category":"Seafood","name":"Galunggong fish","merchant":"Carbon Public Market","price":125,"tag":"Seafood","rating":"4.7","unit":"500 g","image":"assets/img/offline/026-photo-1510130387422-82bed34b37e9.jpg","alt":"Fresh fish"},{"id":"carbon-rice","type":"grocery","category":"Rice","name":"Local well-milled rice","merchant":"Carbon Public Market","price":285,"tag":"Rice","rating":"4.5","unit":"5 kg","image":"assets/img/offline/071-photo-1586201375761-83865001e31c.jpg","alt":"Rice bowl"},{"id":"carbon-danggit","type":"grocery","category":"Dried Goods","name":"Cebu dried danggit","merchant":"Carbon Public Market","price":240,"tag":"Dried","rating":"4.8","unit":"250 g","image":"assets/img/offline/091-photo-1615141982883-c7ad0e69fd62.jpg","alt":"Dried fish at a Philippine market"},{"id":"carbon-okra","type":"grocery","category":"Vegetables","name":"Fresh okra bundle","merchant":"Carbon Public Market","price":58,"tag":"Market","rating":"4.4","unit":"250 g","image":"assets/img/offline/001-bucket-of-raw-okra-pods.jpg","alt":"Fresh okra pods"},{"id":"carbon-coconut","type":"grocery","category":"Fruits","name":"Young coconut","merchant":"Carbon Public Market","price":75,"tag":"Fresh","rating":"4.7","unit":"1 pc","image":"assets/img/offline/063-photo-1580984969071-a8da5656c2fb.jpg","alt":"Coconut"},{"id":"carbon-chorizo","type":"grocery","category":"Local Goods","name":"Cebu chorizo links","merchant":"Carbon Public Market","price":245,"tag":"Local","rating":"4.6","unit":"500 g","image":"assets/img/offline/035-photo-1529692236671-f1f6cf9683ba.jpg","alt":"Cebu chorizo links"}]},"pasil-seafood-market":{"name":"Pasil Seafood Market","type":"Grocery","meta":"Fresh fish, shellfish, squid, crab, and seafood packs","eta":"Morning dispatch","theme":"#0786a8","logo":"Pasil","logoImage":"assets/img/offline/110-favicons.png","products":[{"id":"pasil-tuna","type":"grocery","category":"Fresh Fish","name":"Tuna steak","merchant":"Pasil Seafood Market","price":300,"tag":"Fresh","rating":"4.7","unit":"500 g","image":"assets/img/offline/062-photo-1580476262798-bddd9f4b7369.jpg","alt":"Tuna steak"},{"id":"pasil-shrimp","type":"grocery","category":"Shellfish","name":"Suahe shrimp","merchant":"Pasil Seafood Market","price":330,"tag":"Shellfish","rating":"4.8","unit":"500 g","image":"assets/img/offline/054-photo-1565680018434-b513d5e5fd47.jpg","alt":"Fresh shrimp"},{"id":"pasil-squid","type":"grocery","category":"Squid & Crab","name":"Fresh squid rings","merchant":"Pasil Seafood Market","price":210,"tag":"Squid","rating":"4.5","unit":"500 g","image":"assets/img/offline/068-photo-1584949602334-4e99f98286a9.jpg","alt":"Fresh squid seafood"},{"id":"pasil-crab","type":"grocery","category":"Squid & Crab","name":"Blue crab","merchant":"Pasil Seafood Market","price":360,"tag":"Crab","rating":"4.6","unit":"500 g","image":"assets/img/offline/050-photo-1559737558-2f5a35f4523b.jpg","alt":"Crab"},{"id":"pasil-mix","type":"grocery","category":"Seafood Packs","name":"Sinigang seafood mix","merchant":"Pasil Seafood Market","price":390,"tag":"Pack","rating":"4.4","unit":"1 kg","image":"assets/img/offline/051-photo-1559847844-5315695dadae.jpg","alt":"Sinigang seafood mix"},{"id":"pasil-bangus","type":"grocery","category":"Fresh Fish","name":"Bangus belly","merchant":"Pasil Seafood Market","price":265,"tag":"Fish","rating":"4.6","unit":"500 g","image":"assets/img/offline/026-photo-1510130387422-82bed34b37e9.jpg","alt":"Fresh whole fish"},{"id":"pasil-mussels","type":"grocery","category":"Shellfish","name":"Fresh tahong mussels","merchant":"Pasil Seafood Market","price":160,"tag":"Shellfish","rating":"4.5","unit":"1 kg","image":"assets/img/offline/050-photo-1559737558-2f5a35f4523b.jpg","alt":"Fresh mussels at a market"},{"id":"pasil-lapu-lapu","type":"grocery","category":"Fresh Fish","name":"Lapu-lapu fish","merchant":"Pasil Seafood Market","price":420,"tag":"Fresh","rating":"4.8","unit":"1 kg","image":"assets/img/offline/026-photo-1510130387422-82bed34b37e9.jpg","alt":"Fresh lapu-lapu grouper fish"},{"id":"pasil-kinilaw","type":"food","category":"Seafood Packs","name":"Kinilaw tuna pack","merchant":"Pasil Seafood Market","price":280,"tag":"Ready","rating":"4.6","unit":"500 g","image":"assets/img/offline/051-photo-1559847844-5315695dadae.jpg","alt":"Kinilaw tuna dish"}]},"taboan-market":{"name":"Taboan Market","type":"Grocery","meta":"Cebu dried fish, dried squid, pasalubong, spices, and local goods","eta":"Same day","theme":"#9a6425","logo":"Taboan","logoImage":"assets/img/offline/110-favicons.png","products":[{"id":"taboan-danggit","type":"grocery","category":"Dried Fish","name":"Premium danggit","merchant":"Taboan Market","price":320,"tag":"Cebu","rating":"4.9","unit":"250 g","image":"assets/img/offline/091-photo-1615141982883-c7ad0e69fd62.jpg","alt":"Premium dried danggit fish"},{"id":"taboan-pusit","type":"grocery","category":"Dried Squid","name":"Dried pusit","merchant":"Taboan Market","price":350,"tag":"Dried","rating":"4.8","unit":"250 g","image":"assets/img/offline/068-photo-1584949602334-4e99f98286a9.jpg","alt":"Dried pusit squid"},{"id":"taboan-mango","type":"grocery","category":"Pasalubong","name":"Dried mango pack","merchant":"Taboan Market","price":185,"tag":"Gift","rating":"4.7","unit":"200 g","image":"assets/img/offline/047-photo-1553279768-865429fa0078.jpg","alt":"Pack of Cebu dried mango"},{"id":"taboan-otap","type":"grocery","category":"Pasalubong","name":"Cebu otap box","merchant":"Taboan Market","price":155,"tag":"Pasalubong","rating":"4.5","unit":"1 box","image":"assets/img/offline/025-photo-1509440159596-0249088772ff.jpg","alt":"Cebu otap pastry"},{"id":"taboan-spice","type":"grocery","category":"Spices","name":"Suka and sili set","merchant":"Taboan Market","price":115,"tag":"Spice","rating":"4.4","unit":"2 bottles","image":"assets/img/offline/023-photo-1506368249639-73a05d6f6488.jpg","alt":"Chili spices"},{"id":"taboan-chorizo","type":"grocery","category":"Local Goods","name":"Cebu chorizo pack","merchant":"Taboan Market","price":260,"tag":"Local","rating":"4.7","unit":"500 g","image":"assets/img/offline/035-photo-1529692236671-f1f6cf9683ba.jpg","alt":"Cebu chorizo pack"},{"id":"taboan-masi","type":"grocery","category":"Pasalubong","name":"Cebu masi pack","merchant":"Taboan Market","price":135,"tag":"Local","rating":"4.5","unit":"1 box","image":"assets/img/offline/024-photo-1509365465985-25d11c17e812.jpg","alt":"Local rice cake"},{"id":"taboan-peanut","type":"grocery","category":"Local Goods","name":"Garlic peanuts","merchant":"Taboan Market","price":120,"tag":"Snack","rating":"4.4","unit":"250 g","image":"assets/img/offline/085-photo-1606923829579-0cb981a83e2e.jpg","alt":"Peanuts"},{"id":"taboan-salted-fish","type":"grocery","category":"Dried Fish","name":"Salted fish bundle","merchant":"Taboan Market","price":275,"tag":"Dried","rating":"4.6","unit":"500 g","image":"assets/img/offline/091-photo-1615141982883-c7ad0e69fd62.jpg","alt":"Salted dried fish bundle"}]},"abaca-baking-company":{"name":"Abaca Baking Company","type":"Food","meta":"Cebu bakery cafe for all-butter croissants, pastries, cakes, coffee, and meals","eta":"35-45 min","theme":"#b56b2c","logo":"ABC","logoImage":"assets/img/offline/116-favicons.png","products":[{"id":"abaca-croissant","type":"food","category":"Pastries","name":"All-butter croissant","merchant":"Abaca Baking Company","price":145,"tag":"Signature","rating":"4.9","unit":"1 pc","image":"assets/img/offline/048-photo-1555507036-ab1f4038808a.jpg","alt":"Croissant"},{"id":"abaca-sourdough","type":"food","category":"Bread","name":"Sourdough loaf","merchant":"Abaca Baking Company","price":285,"tag":"Bread","rating":"4.8","unit":"1 loaf","image":"assets/img/offline/025-photo-1509440159596-0249088772ff.jpg","alt":"Sourdough bread"},{"id":"abaca-cheesecake","type":"food","category":"Cakes","name":"New York cheesecake slice","merchant":"Abaca Baking Company","price":240,"tag":"Cake","rating":"4.7","unit":"1 slice","image":"assets/img/offline/036-photo-1533134242443-d4fd215305ad.jpg","alt":"Cheesecake slice"},{"id":"abaca-brownie","type":"food","category":"Desserts","name":"Fudge brownie","merchant":"Abaca Baking Company","price":155,"tag":"Dessert","rating":"4.6","unit":"1 pc","image":"assets/img/offline/084-photo-1606313564200-e75d5e30476c.jpg","alt":"Brownies"},{"id":"abaca-latte","type":"food","category":"Coffee","name":"Iced latte","merchant":"Abaca Baking Company","price":175,"tag":"Coffee","rating":"4.6","unit":"16 oz","image":"assets/img/offline/014-photo-1461023058943-07fcbe16d735.jpg","alt":"Iced coffee"},{"id":"abaca-sandwich","type":"food","category":"Meals","name":"Chicken deli sandwich","merchant":"Abaca Baking Company","price":345,"tag":"Lunch","rating":"4.5","unit":"1 sandwich","image":"assets/img/offline/034-photo-1528735602780-2552fd46c7af.jpg","alt":"Deli sandwich"},{"id":"abaca-cinnamon","type":"food","category":"Pastries","name":"Cinnamon roll","merchant":"Abaca Baking Company","price":165,"tag":"Bakery","rating":"4.8","unit":"1 pc","image":"assets/img/offline/024-photo-1509365465985-25d11c17e812.jpg","alt":"Cinnamon roll"},{"id":"abaca-cookie","type":"food","category":"Desserts","name":"Chocolate chip cookie box","merchant":"Abaca Baking Company","price":360,"tag":"Dessert","rating":"4.7","unit":"6 pcs","image":"assets/img/offline/021-photo-1499636136210-6f4ee915583e.jpg","alt":"Chocolate cookies"},{"id":"abaca-cake","type":"food","category":"Cakes","name":"Carrot cake slice","merchant":"Abaca Baking Company","price":245,"tag":"Cake","rating":"4.8","unit":"1 slice","image":"assets/img/offline/055-photo-1565958011703-44f9829ba187.jpg","alt":"Cake slice"}]},"julies-bakeshop-cebu":{"name":"Julie's Bakeshop Cebu","type":"Food","meta":"Cebu-born neighborhood bakery for pandesal, breads, pastries, snacks, and drinks","eta":"30-40 min","theme":"#dd2f2f","logo":"Julie","logoImage":"assets/img/offline/111-favicons.png","products":[{"id":"julies-pandesal","type":"food","category":"Bread","name":"Hot pandesal","merchant":"Julie's Bakeshop Cebu","price":72,"tag":"Fresh","rating":"4.8","unit":"12 pcs","image":"assets/img/offline/121-pandesal.png","alt":"Julies hot pandesal bread rolls"},{"id":"julies-cheese-bread","type":"food","category":"Bread","name":"Cheese bread","merchant":"Julie's Bakeshop Cebu","price":90,"tag":"Classic","rating":"4.7","unit":"6 pcs","image":"assets/img/offline/118-cheese-bread-1.png","alt":"Julies cheese bread"},{"id":"julies-spanish","type":"food","category":"Pastries","name":"Spanish bread","merchant":"Julie's Bakeshop Cebu","price":88,"tag":"Pastry","rating":"4.6","unit":"6 pcs","image":"assets/img/offline/122-spanish-bread-1.png","alt":"Julies Spanish bread"},{"id":"julies-loaf","type":"food","category":"Cakes","name":"Violet cream loaf","merchant":"Julie's Bakeshop Cebu","price":165,"tag":"Loaf","rating":"4.5","unit":"1 loaf","image":"assets/img/offline/124-violet-cream-loaf-1.png","alt":"Julies violet cream loaf"},{"id":"julies-snack","type":"food","category":"Snacks","name":"Ensaymada snack box","merchant":"Julie's Bakeshop Cebu","price":150,"tag":"Snack","rating":"4.4","unit":"4 pcs","image":"assets/img/offline/120-ensaymada.png","alt":"Julies ensaymada"},{"id":"julies-drink","type":"food","category":"Drinks","name":"Bottled iced tea","merchant":"Julie's Bakeshop Cebu","price":55,"tag":"Drink","rating":"4.2","unit":"500 ml","image":"assets/img/offline/020-photo-1497534446932-c925b458314e.jpg","alt":"Iced tea drink"},{"id":"julies-ube","type":"food","category":"Bread","name":"Ube cheese pandesal","merchant":"Julie's Bakeshop Cebu","price":130,"tag":"Fresh","rating":"4.7","unit":"6 pcs","image":"assets/img/offline/123-ube-cheese-de-sal-1.png","alt":"Julies ube cheese de sal"},{"id":"julies-mamon","type":"food","category":"Cakes","name":"Classic mamon pack","merchant":"Julie's Bakeshop Cebu","price":105,"tag":"Classic","rating":"4.6","unit":"4 pcs","image":"assets/img/offline/119-cheesy-mamon-1.png","alt":"Julies cheesy mamon"},{"id":"julies-pie","type":"food","category":"Pies","name":"Buko pie slice","merchant":"Julie's Bakeshop Cebu","price":95,"tag":"Pie","rating":"4.4","unit":"1 slice","image":"assets/img/offline/094-photo-1621303837174-89787a7d4729.jpg","alt":"Buko pie slice"}]},"caminade-petshop":{"name":"Caminade Petshop","type":"Pet Supplies","meta":"Cebu pet shop for dog food, cat food, grooming, accessories, and health supplies","eta":"Next day","theme":"#cf4b32","logo":"CP","logoImage":"assets/img/offline/109-favicons.png","products":[{"id":"caminade-dogfood","type":"grocery","category":"Dog Food","name":"Adult dog food repack","merchant":"Caminade Petshop","price":185,"tag":"Dog","rating":"4.7","unit":"1 kg","image":"assets/img/offline/072-photo-1589924691995-400dc9ecc119.jpg","alt":"Dog food bowl"},{"id":"caminade-catfood","type":"grocery","category":"Cat Food","name":"Wet cat food cans","merchant":"Caminade Petshop","price":540,"tag":"Cat","rating":"4.6","unit":"12 cans","image":"assets/img/offline/082-photo-1606214174585-fe31582dc6ee.jpg","alt":"Cat food bowl"},{"id":"caminade-dogtoy","type":"grocery","category":"Dog Accessories","name":"Rope chew toy","merchant":"Caminade Petshop","price":150,"tag":"Toy","rating":"4.5","unit":"1 pc","image":"assets/img/offline/057-photo-1568640347023-a616a30bc3bd.jpg","alt":"Dog toy"},{"id":"caminade-catbed","type":"grocery","category":"Cat Accessories","name":"Soft cat bed","merchant":"Caminade Petshop","price":620,"tag":"Bed","rating":"4.4","unit":"1 bed","image":"assets/img/offline/060-photo-1574144611937-0df059b5ef3e.jpg","alt":"Cat on bed"},{"id":"caminade-shampoo","type":"grocery","category":"Grooming","name":"Pet grooming shampoo","merchant":"Caminade Petshop","price":310,"tag":"Grooming","rating":"4.5","unit":"500 ml","image":"assets/img/offline/028-photo-1516734212186-a967f81ad0d7.jpg","alt":"Dog grooming"},{"id":"caminade-vitamins","type":"grocery","category":"Health","name":"Pet vitamins","merchant":"Caminade Petshop","price":280,"tag":"Health","rating":"4.4","unit":"60 tabs","image":"assets/img/offline/065-photo-1583337130417-3346a1be7dee.jpg","alt":"Dog with owner"},{"id":"caminade-leash","type":"grocery","category":"Dog Accessories","name":"Adjustable dog leash","merchant":"Caminade Petshop","price":260,"tag":"Accessory","rating":"4.5","unit":"1 pc","image":"assets/img/offline/078-photo-1601758125946-6ec2ef64daf8.jpg","alt":"Dog with leash"},{"id":"caminade-cat-toy","type":"grocery","category":"Cat Accessories","name":"Feather cat teaser","merchant":"Caminade Petshop","price":135,"tag":"Toy","rating":"4.4","unit":"1 pc","image":"assets/img/offline/042-photo-1545249390-6bdfa286032f.jpg","alt":"Cat toy"},{"id":"caminade-dog-treats","type":"grocery","category":"Dog Food","name":"Chicken dog treats","merchant":"Caminade Petshop","price":210,"tag":"Treat","rating":"4.6","unit":"150 g","image":"assets/img/offline/072-photo-1589924691995-400dc9ecc119.jpg","alt":"Dog treats"}]},"meowfresh-cebu":{"name":"Meow Fresh Cebu","type":"Pet Supplies","meta":"Metro Cebu pet supplies for cat litter, food, treats, grooming, and accessories","eta":"Same day","theme":"#5c52c8","logo":"MF","logoImage":"assets/img/offline/113-favicons.png","products":[{"id":"meowfresh-litter","type":"grocery","category":"Cat Litter","name":"Clumping cat litter","merchant":"Meow Fresh Cebu","price":430,"tag":"Litter","rating":"4.8","unit":"10 L","image":"assets/img/offline/042-photo-1545249390-6bdfa286032f.jpg","alt":"Cat litter scoop"},{"id":"meowfresh-kitten","type":"grocery","category":"Cat Food","name":"Organic kitten food","merchant":"Meow Fresh Cebu","price":360,"tag":"Kitten","rating":"4.7","unit":"1 kg","image":"assets/img/offline/082-photo-1606214174585-fe31582dc6ee.jpg","alt":"Cat food"},{"id":"meowfresh-dog","type":"grocery","category":"Dog Food","name":"Aozi dog food pack","merchant":"Meow Fresh Cebu","price":490,"tag":"Dog","rating":"4.5","unit":"2 kg","image":"assets/img/offline/072-photo-1589924691995-400dc9ecc119.jpg","alt":"Dog food bowl"},{"id":"meowfresh-treats","type":"grocery","category":"Treats","name":"Freeze-dried pet treats","merchant":"Meow Fresh Cebu","price":260,"tag":"Treat","rating":"4.6","unit":"100 g","image":"assets/img/offline/057-photo-1568640347023-a616a30bc3bd.jpg","alt":"Pet treats"},{"id":"meowfresh-brush","type":"grocery","category":"Grooming","name":"Pet grooming brush","merchant":"Meow Fresh Cebu","price":220,"tag":"Brush","rating":"4.3","unit":"1 pc","image":"assets/img/offline/028-photo-1516734212186-a967f81ad0d7.jpg","alt":"Dog grooming"},{"id":"meowfresh-carrier","type":"grocery","category":"Accessories","name":"Pet travel carrier","merchant":"Meow Fresh Cebu","price":890,"tag":"Carrier","rating":"4.4","unit":"1 carrier","image":"assets/img/offline/058-photo-1570824104453-508955ab713e.jpg","alt":"Cat carrier"},{"id":"meowfresh-scratch","type":"grocery","category":"Accessories","name":"Cat scratching board","merchant":"Meow Fresh Cebu","price":320,"tag":"Accessory","rating":"4.5","unit":"1 board","image":"assets/img/offline/060-photo-1574144611937-0df059b5ef3e.jpg","alt":"Cat scratching board"},{"id":"meowfresh-salmon","type":"grocery","category":"Cat Food","name":"Salmon wet cat food","merchant":"Meow Fresh Cebu","price":155,"tag":"Cat","rating":"4.7","unit":"4 pouches","image":"assets/img/offline/082-photo-1606214174585-fe31582dc6ee.jpg","alt":"Cat food bowl"},{"id":"meowfresh-collar","type":"grocery","category":"Accessories","name":"Reflective pet collar","merchant":"Meow Fresh Cebu","price":190,"tag":"Accessory","rating":"4.4","unit":"1 pc","image":"assets/img/offline/058-photo-1570824104453-508955ab713e.jpg","alt":"Pet collar"}]}},
+            initialShopCategories: ["Rice & Staples","Fresh Produce","Meat & Seafood","Dairy & Eggs","Household","Snacks","Drinks","Canned Goods","Personal Care"],
+            collections: [
+                'customer',
+                'customer_order',
+                'delivery',
+                'merchant',
+                'orders',
+                'order_item',
+                'payment_transaction',
+                'products',
+                'rating',
+                'refund',
+                'shopper',
+                'stores',
+                'substitution',
+                'USER_ACCOUNT'
+            ]
+        };
+    </script>
+    <script src="assets/js/vendor/lucide.min.js"></script>
+    <script type="module" src="assets/js/app.js?v=1779530814"></script>
+</body>
+</html>

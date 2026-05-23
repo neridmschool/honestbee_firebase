@@ -4150,6 +4150,80 @@ body.has-open-seller-order-modal {
     margin: 0;
 }
 
+.customer-feedback-saved-note,
+.customer-existing-feedback-list {
+    display: grid;
+    gap: 8px;
+    padding: 12px 14px;
+    border: 1px solid rgba(255, 194, 14, 0.35);
+    border-radius: 12px;
+    background: rgba(255, 194, 14, 0.10);
+    color: var(--ink);
+    font-size: 0.9rem;
+}
+
+.customer-feedback-saved-note {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0;
+    font-weight: 850;
+}
+
+.customer-feedback-saved-note i,
+.customer-feedback-saved-note svg {
+    width: 18px;
+    height: 18px;
+    color: var(--honey);
+}
+
+.customer-existing-feedback-list > strong {
+    color: var(--ink);
+    font-size: 0.9rem;
+}
+
+.customer-existing-feedback-item {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 10px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--white);
+}
+
+.customer-existing-feedback-item span {
+    padding: 5px 8px;
+    border-radius: 999px;
+    background: var(--paper);
+    color: var(--muted);
+    font-size: 0.76rem;
+    font-weight: 900;
+}
+
+.customer-existing-feedback-item p {
+    margin: 0;
+    color: var(--ink);
+    font-size: 0.86rem;
+}
+
+.customer-existing-feedback-item small {
+    color: var(--ink);
+    font-weight: 900;
+}
+
+html.theme-dark .customer-feedback-saved-note,
+html.theme-dark .customer-existing-feedback-list {
+    border-color: rgba(255, 203, 59, 0.26);
+    background: rgba(255, 203, 59, 0.08);
+}
+
+html.theme-dark .customer-existing-feedback-item {
+    background: rgba(255, 255, 255, 0.05);
+}
+
+
 .customer-product-modal {
     position: relative;
     width: min(760px, 100%);
