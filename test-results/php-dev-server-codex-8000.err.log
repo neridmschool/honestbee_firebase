@@ -1,0 +1,19 @@
+[Sun May 17 19:35:56 2026] PHP 8.2.12 Development Server (http://127.0.0.1:8000) started
+[Sun May 17 19:36:07 2026] 127.0.0.1:62416 Accepted
+[Sun May 17 19:36:07 2026] 127.0.0.1:62416 [200]: GET /customer-dashboard.php
+[Sun May 17 19:36:07 2026] 127.0.0.1:62416 Closing
+[Sun May 17 19:46:57 2026] 127.0.0.1:57965 Accepted
+[Sun May 17 19:46:57 2026] 127.0.0.1:57965 [200]: GET /customer-dashboard.php?store=metro-ayala-cebu
+[Sun May 17 19:46:57 2026] 127.0.0.1:57965 Closing
+[Sun May 17 19:46:57 2026] 127.0.0.1:57966 Accepted
+[Sun May 17 19:46:57 2026] 127.0.0.1:57966 [200]: GET /index.php
+[Sun May 17 19:46:57 2026] 127.0.0.1:57966 Closing
+[Sun May 17 19:47:23 2026] 127.0.0.1:57706 Accepted
+[Sun May 17 19:47:23 2026] 127.0.0.1:57706 [200]: GET /index.php
+[Sun May 17 19:47:23 2026] 127.0.0.1:57706 Closing
+[Sun May 17 20:12:31 2026] 127.0.0.1:63797 Accepted
+[Sun May 17 20:12:31 2026] 127.0.0.1:63797 [200]: GET /customer-dashboard.php
+[Sun May 17 20:12:31 2026] 127.0.0.1:63797 Closing
+[Sun May 17 20:38:30 2026] 127.0.0.1:64666 Accepted
+[Sun May 17 20:38:30 2026] 127.0.0.1:64666 [200]: GET /customer-dashboard.php
+[Sun May 17 20:38:30 2026] 127.0.0.1:64666 Closing

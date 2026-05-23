@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="honestbee logo">
+  <rect width="64" height="64" rx="12" fill="#ffd331"/>
+  <path d="M19 22c-7-2-13 2-14 9-1 8 6 13 14 11" fill="#fffdf8" stroke="#171717" stroke-width="3" stroke-linecap="round"/>
+  <path d="M45 22c7-2 13 2 14 9 1 8-6 13-14 11" fill="#fffdf8" stroke="#171717" stroke-width="3" stroke-linecap="round"/>
+  <path d="M18 33c0-10 6-18 14-18s14 8 14 18-6 18-14 18-14-8-14-18Z" fill="#ffd331" stroke="#171717" stroke-width="3"/>
+  <path d="M20 29h24M20 38h24" stroke="#171717" stroke-width="4" stroke-linecap="round"/>
+  <path d="M27 15c-1-5-3-8-7-10M37 15c1-5 3-8 7-10" fill="none" stroke="#171717" stroke-width="3" stroke-linecap="round"/>
+  <circle cx="26" cy="25" r="2.2" fill="#171717"/>
+  <circle cx="38" cy="25" r="2.2" fill="#171717"/>
+</svg>
