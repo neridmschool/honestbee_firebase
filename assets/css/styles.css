@@ -9846,6 +9846,27 @@ html.account-role-admin .role-aware-footer .role-footer--admin {
     display: grid;
 }
 
+html:not(.account-role-customer) [data-customer-dashboard],
+html:not(.account-role-seller) [data-seller-dashboard],
+html:not(.account-role-rider) [data-rider-dashboard],
+html:not(.account-role-admin) [data-admin-dashboard] {
+    display: none !important;
+}
+
+html:not(.has-current-account) .role-aware-footer.footer-server-customer .role-footer--customer,
+html:not(.has-current-account) .role-aware-footer.footer-server-seller .role-footer--seller,
+html:not(.has-current-account) .role-aware-footer.footer-server-rider .role-footer--rider,
+html:not(.has-current-account) .role-aware-footer.footer-server-admin .role-footer--admin {
+    display: none;
+}
+
+html:not(.has-current-account) .role-aware-footer.footer-server-customer .role-footer--guest,
+html:not(.has-current-account) .role-aware-footer.footer-server-seller .role-footer--guest,
+html:not(.has-current-account) .role-aware-footer.footer-server-rider .role-footer--guest,
+html:not(.has-current-account) .role-aware-footer.footer-server-admin .role-footer--guest {
+    display: grid;
+}
+
 .role-aware-footer .footer-shortcut {
     display: none;
 }
@@ -9866,6 +9887,20 @@ html.account-role-customer .role-aware-footer .footer-shortcut--customer,
 html.account-role-seller .role-aware-footer .footer-shortcut--seller,
 html.account-role-rider .role-aware-footer .footer-shortcut--rider,
 html.account-role-admin .role-aware-footer .footer-shortcut--admin {
+    display: inline-grid;
+}
+
+html:not(.has-current-account) .role-aware-footer.footer-server-customer .footer-shortcut--customer,
+html:not(.has-current-account) .role-aware-footer.footer-server-seller .footer-shortcut--seller,
+html:not(.has-current-account) .role-aware-footer.footer-server-rider .footer-shortcut--rider,
+html:not(.has-current-account) .role-aware-footer.footer-server-admin .footer-shortcut--admin {
+    display: none;
+}
+
+html:not(.has-current-account) .role-aware-footer.footer-server-customer .footer-shortcut--guest,
+html:not(.has-current-account) .role-aware-footer.footer-server-seller .footer-shortcut--guest,
+html:not(.has-current-account) .role-aware-footer.footer-server-rider .footer-shortcut--guest,
+html:not(.has-current-account) .role-aware-footer.footer-server-admin .footer-shortcut--guest {
     display: inline-grid;
 }
 

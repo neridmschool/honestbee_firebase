@@ -377,6 +377,8 @@ function clearCurrentAccount() {
         removeLocal(storageKeys.customerEmail);
         removeLocal(storageKeys.shopperId);
         removeLocal(storageKeys.merchantId);
+        removeLocal(storageKeys.sellerApplication);
+        removeLocal(storageKeys.riderApplication);
     } catch (error) {
         // Browsers can disable local storage.
     }
@@ -393,6 +395,7 @@ function roleLower(value) {
 
 const deletedAccountMessage = 'Your account has been deleted.';
 const pendingApprovalMessage = 'Pending for approval.';
+const partnerApplicationSubmittedMessage = 'Application submitted. Sign in after admin approval.';
 
 function normalizedAccountRole(value) {
     const role = roleLower(value);
@@ -516,8 +519,8 @@ function firestoreAdminTimestamp(record = {}) {
 
 function adminSortByDateThenName(records = [], nameSelector = (record) => record.id) {
     return [...records].sort((first, second) => {
-        const firstTime = firestoreDateValue(firestoreAdminTimestamp(first));
-        const secondTime = firestoreDateValue(firestoreAdminTimestamp(second));
+        const firstTime = timestampMillis(firestoreAdminTimestamp(first));
+        const secondTime = timestampMillis(firestoreAdminTimestamp(second));
         if (secondTime !== firstTime) {
             return secondTime - firstTime;
         }
@@ -526,7 +529,11 @@ function adminSortByDateThenName(records = [], nameSelector = (record) => record
 }
 
 function normalizeFirestoreAdminCustomer(uid, customer = {}, user = {}) {
-    const displayName = user.username || fullNameFromParts(customer.firstName, customer.lastName) || titleCaseName(String(user.email || '').split('@')[0]);
+    const email = user.email || user.USER_email || customer.email || customer.CUST_email || customer.USER_email || '';
+    const displayName = user.username
+        || user.USER_displayName
+        || fullNameFromParts(customer.firstName || customer.CUST_firstName, customer.lastName || customer.CUST_lastName)
+        || titleCaseName(String(email || '').split('@')[0]);
     const parts = splitFullName(displayName);
     const address = cleanAddressPart(customer.address || customer.CUST_address || '');
 
@@ -536,7 +543,7 @@ function normalizeFirestoreAdminCustomer(uid, customer = {}, user = {}) {
         USER_linkedId: uid,
         USER_role: 'customer',
         role: 'customer',
-        USER_email: user.email || customer.email || '',
+        USER_email: email,
         USER_displayName: displayName || 'Customer',
         USER_firstName: customer.firstName || customer.CUST_firstName || parts.firstName || '',
         USER_lastName: customer.lastName || customer.CUST_lastName || parts.lastName || '',
@@ -544,11 +551,61 @@ function normalizeFirestoreAdminCustomer(uid, customer = {}, user = {}) {
         USER_address: address,
         USER_city: normalizeServiceCity(customer.city || customer.CUST_city) || deriveServiceCityFromAddress(address) || '',
         USER_preferredDeliveryTime: customer.preferredDeliveryTime || customer.CUST_preferredDeliveryTime || '',
-        USER_status: titleStatus(user.status, 'Active'),
+        USER_status: titleStatus(user.status || user.USER_status || customer.status || customer.USER_status, 'Active'),
         profileImageUrl: customer.profileImageUrl || '',
         createdAt: customer.createdAt || user.createdAt || null,
         updatedAt: customer.updatedAt || user.updatedAt || null
     };
+}
+
+function adminCustomerProfileRepairPayload(uid, user = {}, customer = {}) {
+    const email = String(user.email || user.USER_email || customer.email || customer.CUST_email || '').trim().toLowerCase();
+    const displayName = user.username
+        || user.USER_displayName
+        || fullNameFromParts(customer.firstName || customer.CUST_firstName, customer.lastName || customer.CUST_lastName)
+        || titleCaseName(email.split('@')[0]);
+    const parts = splitFullName(displayName);
+    const firstName = customer.firstName || customer.CUST_firstName || parts.firstName || '';
+    const lastName = customer.lastName || customer.CUST_lastName || parts.lastName || '';
+    const phone = customer.phone || customer.CUST_phone || user.phone || user.USER_phone || '';
+    const address = cleanAddressPart(customer.address || customer.CUST_address || user.address || user.USER_address || '');
+    const city = normalizeServiceCity(customer.city || customer.CUST_city || user.city || user.USER_city) || deriveServiceCityFromAddress(address) || '';
+
+    return {
+        firstName,
+        lastName,
+        email,
+        phone,
+        address,
+        city,
+        role: 'customer',
+        status: 'active',
+        username: displayName,
+        CUST_id: uid,
+        CUST_firstName: firstName,
+        CUST_lastName: lastName,
+        CUST_email: email,
+        CUST_phone: phone,
+        CUST_address: address,
+        CUST_city: city,
+        USER_role: 'customer',
+        USER_email: email,
+        USER_status: 'Active',
+        updatedAt: firebaseServerTimestamp()
+    };
+}
+
+function customerProfileNeedsAdminRepair(customer = {}, user = {}) {
+    if (!user?.id || adminUserRecordRole(user) !== 'customer') {
+        return false;
+    }
+
+    return !customer
+        || !customer.email
+        || !customer.role
+        || !customer.status
+        || !customer.CUST_email
+        || !customer.USER_role;
 }
 
 function normalizeFirestoreAdminMerchant(uid, merchant = {}, user = {}) {
@@ -562,7 +619,8 @@ function normalizeFirestoreAdminMerchant(uid, merchant = {}, user = {}) {
         MERCH_address: merchant.address || merchant.MERCH_address || '',
         MERCH_availableDays: merchant.availableDays || merchant.MERCH_availableDays || '',
         MERCH_storeStatus: merchant.storeStatus || merchant.MERCH_storeStatus || '',
-        MERCH_approvalStatus: merchant.approvalStatus || merchant.MERCH_approvalStatus || user.status || 'pending'
+        MERCH_approvalStatus: merchant.approvalStatus || merchant.MERCH_approvalStatus || user.status || 'pending',
+        MERCH_businessHours: merchant.businessHours || merchant.MERCH_businessHours || ''
     });
 
     return {
@@ -574,6 +632,7 @@ function normalizeFirestoreAdminMerchant(uid, merchant = {}, user = {}) {
         MERCH_phone: merchant.phone || merchant.MERCH_phone || normalizedMerchant.MERCH_phone || '',
         MERCH_businessProof: merchant.documentUrl || merchant.businessProof || merchant.MERCH_businessProof || '',
         MERCH_businessPermit: merchant.documentUrl || merchant.businessPermit || merchant.MERCH_businessPermit || '',
+        MERCH_businessHours: merchant.businessHours || merchant.MERCH_businessHours || normalizedMerchant.MERCH_businessHours || '',
         documentUrl: merchant.documentUrl || '',
         logoUrl: merchant.logoUrl || '',
         USER_status: titleStatus(user.status, normalizedMerchant.MERCH_approvalStatus),
@@ -584,6 +643,8 @@ function normalizeFirestoreAdminMerchant(uid, merchant = {}, user = {}) {
 
 function normalizeFirestoreAdminRider(uid, rider = {}, user = {}) {
     const normalizedRider = firebaseRiderRecord(uid, rider, user, {
+        SHOP_firstName: rider.firstName || rider.SHOP_firstName || rider.RIDER_firstName || '',
+        SHOP_lastName: rider.lastName || rider.SHOP_lastName || rider.RIDER_lastName || '',
         SHOP_phone: rider.phone || '',
         SHOP_currentLocation: rider.currentLocation || '',
         SHOP_vehicleType: rider.vehicleType || '',
@@ -596,6 +657,8 @@ function normalizeFirestoreAdminRider(uid, rider = {}, user = {}) {
         role: 'rider',
         SHOP_id: uid,
         RIDER_id: uid,
+        SHOP_firstName: rider.firstName || rider.SHOP_firstName || rider.RIDER_firstName || normalizedRider.SHOP_firstName || '',
+        SHOP_lastName: rider.lastName || rider.SHOP_lastName || rider.RIDER_lastName || normalizedRider.SHOP_lastName || '',
         SHOP_email: user.email || rider.email || normalizedRider.SHOP_email || '',
         SHOP_phone: rider.phone || rider.SHOP_phone || normalizedRider.SHOP_phone || '',
         SHOP_validId: rider.validIdUrl || rider.validId || rider.SHOP_validId || '',
@@ -791,9 +854,16 @@ function startFirebaseAuthStateSync() {
         onAuthStateChanged(firebaseAuth, async (firebaseUser) => {
             try {
                 if (firebaseUser) {
-                    await syncCurrentAccountFromFirebase(firebaseUser, {
+                    const account = await accountFromFirebaseUser(firebaseUser, {
                         allowAdminBootstrap: firebaseUser.email === adminAccount.USER_email
                     });
+                    if (account && (isDeletedAccountRecord(account) || accountApprovalMessage(account))) {
+                        await signOut(firebaseAuth).catch(() => {});
+                        clearCurrentAccount();
+                    } else if (account) {
+                        setCurrentAccount(account);
+                        saveRoleStorageForAccount(account);
+                    }
                 } else if (getCurrentAccount()) {
                     clearCurrentAccount();
                 }
@@ -903,12 +973,46 @@ function applyStickyLanguageForAccount(account = getCurrentAccount()) {
     }
 }
 
-function redirectToWaiting(role, id) {
-    location.href = `waiting-approval.html?role=${encodeURIComponent(role)}&id=${encodeURIComponent(id)}`;
+function signInNoticeMessage(value) {
+    const key = String(value || '').toLowerCase().replace(/[^a-z-]/g, '');
+    if (key === 'application-submitted') {
+        return partnerApplicationSubmittedMessage;
+    }
+    if (key === 'pending-approval') {
+        return pendingApprovalMessage;
+    }
+    return '';
 }
 
-function redirectToPendingApproval() {
-    location.href = 'index.html?modal=pending-approval';
+function signInModalUrl(noticeKey = '') {
+    const target = /\.php$/i.test(location.pathname) ? 'index.php' : 'index.html';
+    const params = new URLSearchParams({ modal: 'signin' });
+    if (noticeKey) {
+        params.set('notice', noticeKey);
+    }
+    return `${target}?${params.toString()}`;
+}
+
+function setSignInNotice(message, isError = false) {
+    const notice = $('[data-account-modal="signin"] [data-login-notice]') || $('[data-login-notice]');
+    setNotice(notice, message, isError);
+}
+
+function openSignInModalWithNotice(message, isError = false) {
+    const opened = openAccountModal('signin');
+    if (!opened) {
+        return false;
+    }
+    setSignInNotice(message, isError);
+    return true;
+}
+
+function redirectToPendingSignIn() {
+    signOut(firebaseAuth).catch(() => {}).finally(() => {
+        clearCurrentAccount();
+        renderAuthChrome(null);
+        location.href = signInModalUrl('pending-approval');
+    });
 }
 
 function dashboardForAccount(account) {
@@ -921,13 +1025,13 @@ function dashboardForAccount(account) {
     if (role === 'seller') {
         return account?.MERCH_approvalStatus === 'Approved'
             ? 'seller-dashboard.html'
-            : `waiting-approval.html?role=seller&id=${encodeURIComponent(accountLinkedId(account))}`;
+            : signInModalUrl('pending-approval');
     }
 
     if (role === 'rider') {
         return account?.SHOP_employmentStatus === 'Active'
             ? 'rider-dashboard.html'
-            : `waiting-approval.html?role=rider&id=${encodeURIComponent(accountLinkedId(account))}`;
+            : signInModalUrl('pending-approval');
     }
 
     if (role === 'customer') {
@@ -947,6 +1051,74 @@ function requireSignedRole(allowedRoles) {
     }
 
     return account;
+}
+
+function isCurrentAdminAccount(account) {
+    return accountRole(account) === 'admin'
+        && account?.USER_status === 'Active'
+        && accountEmail(account) === adminAccount.USER_email;
+}
+
+function currentProtectedPageRequirement() {
+    const page = document.body?.dataset.page || '';
+
+    if (page === 'admin' && $('[data-admin-dashboard]')) {
+        return {
+            page,
+            allowed: (account) => isCurrentAdminAccount(account),
+            redirectTarget: (account) => (
+                account && accountRole(account) !== 'admin'
+                    ? dashboardForAccount(account)
+                    : 'index.html?modal=signin'
+            )
+        };
+    }
+
+    if (page === 'customer' && $('[data-customer-dashboard]')) {
+        return {
+            page,
+            allowed: (account) => accountRole(account) === 'customer',
+            redirectTarget: (account) => (account ? dashboardForAccount(account) : 'index.html?modal=signin')
+        };
+    }
+
+    if (page === 'seller' && $('[data-seller-dashboard]')) {
+        return {
+            page,
+            allowed: (account) => accountRole(account) === 'seller',
+            redirectTarget: (account) => (account ? dashboardForAccount(account) : 'index.html?modal=signin')
+        };
+    }
+
+    if (page === 'rider' && $('[data-rider-dashboard]')) {
+        return {
+            page,
+            allowed: (account) => accountRole(account) === 'rider',
+            redirectTarget: (account) => (account ? dashboardForAccount(account) : 'index.html?modal=signin')
+        };
+    }
+
+    return null;
+}
+
+function enforceProtectedPageAccess({ replace = false } = {}) {
+    const requirement = currentProtectedPageRequirement();
+    if (!requirement) {
+        return true;
+    }
+
+    const account = getCurrentAccount();
+    if (requirement.allowed(account)) {
+        return true;
+    }
+
+    const target = requirement.redirectTarget(account);
+    if (replace) {
+        location.replace(target);
+    } else {
+        location.href = target;
+    }
+    return false;
 }
 
 function setNotice(node, message, isError = false) {
@@ -3291,9 +3463,23 @@ async function saveCustomerOrder(payload) {
     await firebaseSetDoc(firebaseRoleDoc('customer', customerUid), {
         firstName: customerNameParts.firstName,
         lastName: customerNameParts.lastName,
+        email: String(payload.email || '').toLowerCase(),
         phone: payload.phone,
         address: payload.address,
         city: normalizeServiceCity(payload.city) || null,
+        role: 'customer',
+        status: 'active',
+        username: payload.customer_name,
+        CUST_id: customerUid,
+        CUST_firstName: customerNameParts.firstName,
+        CUST_lastName: customerNameParts.lastName,
+        CUST_email: String(payload.email || '').toLowerCase(),
+        CUST_phone: payload.phone,
+        CUST_address: payload.address,
+        CUST_city: normalizeServiceCity(payload.city) || null,
+        USER_role: 'customer',
+        USER_email: String(payload.email || '').toLowerCase(),
+        USER_status: 'Active',
         profileImageUrl: '',
         updatedAt: firebaseServerTimestamp()
     }, { merge: true });
@@ -3455,6 +3641,16 @@ async function ensureCustomerProfileForUser(user) {
             CUST_email: email,
             CUST_phone: user.USER_phone || '',
             CUST_city: normalizeServiceCity(user.USER_city) || null,
+            firstName: user.USER_firstName || '',
+            lastName: user.USER_lastName || '',
+            email,
+            phone: user.USER_phone || '',
+            city: normalizeServiceCity(user.USER_city) || null,
+            role: 'customer',
+            status: 'active',
+            USER_role: 'customer',
+            USER_email: email,
+            USER_status: 'Active',
             CUST_createdAt: serverTimestamp()
         });
     }
@@ -3570,15 +3766,39 @@ function accountAlreadyExistsMessage(role) {
 }
 
 function isSellerRecord(record) {
-    return Boolean(record && (roleLower(record.role) === 'seller' || record.MERCH_ownerEmail || record.MERCH_password));
+    const role = normalizedAccountRole(record?.role || record?.USER_role || '');
+    return Boolean(record && (
+        role === 'seller'
+        || record.MERCH_ownerEmail
+        || record.ownerEmail
+        || record.storeName
+        || record.MERCH_password
+    ));
 }
 
 function isSellerAccountRecord(record) {
-    return Boolean(record && (record.MERCH_ownerEmail || record.MERCH_password || record.MERCH_ownerFirstName || record.MERCH_ownerLastName || record.MERCH_ownerName));
+    const role = normalizedAccountRole(record?.role || record?.USER_role || '');
+    return Boolean(record && (
+        role === 'seller'
+        || record.MERCH_ownerEmail
+        || record.ownerEmail
+        || record.storeName
+        || record.MERCH_password
+        || record.MERCH_ownerFirstName
+        || record.MERCH_ownerLastName
+        || record.MERCH_ownerName
+    ));
 }
 
 function isRiderRecord(record) {
-    return Boolean(record && (roleLower(record.role) === 'rider' || record.SHOP_email || record.RIDER_email));
+    return Boolean(record && (
+        roleLower(record.role || record.USER_role) === 'rider'
+        || record.SHOP_email
+        || record.RIDER_email
+        || record.email
+        || record.fullName
+        || record.vehicleType
+    ));
 }
 
 function titleCaseName(value) {
@@ -3764,10 +3984,10 @@ async function handleAutoLogin(email, password, notice) {
 
     const approvalMessage = accountApprovalMessage(account);
     if (approvalMessage) {
-        setNotice(notice, approvalMessage, accountRole(account) !== 'customer');
-        window.setTimeout(() => {
-            location.href = dashboardForAccount(account);
-        }, 500);
+        await signOut(firebaseAuth).catch(() => {});
+        clearCurrentAccount();
+        renderAuthChrome(null);
+        setNotice(notice, approvalMessage, true);
         return;
     }
 
@@ -3794,8 +4014,23 @@ async function createCustomerFirebaseAccount(details) {
     await firebaseSetDoc(firebaseRoleDoc('customer', uid), {
         firstName: details.firstName,
         lastName: details.lastName,
+        email: details.email,
         phone: details.phone,
         address: details.address,
+        city: details.city || deriveServiceCityFromAddress(details.address) || '',
+        role: 'customer',
+        status: 'active',
+        username,
+        CUST_id: uid,
+        CUST_firstName: details.firstName,
+        CUST_lastName: details.lastName,
+        CUST_email: details.email,
+        CUST_phone: details.phone,
+        CUST_address: details.address,
+        CUST_city: details.city || deriveServiceCityFromAddress(details.address) || '',
+        USER_role: 'customer',
+        USER_email: details.email,
+        USER_status: 'Active',
         profileImageUrl: '',
         createdAt: firebaseServerTimestamp()
     });
@@ -3807,57 +4042,84 @@ async function createMerchantFirebaseAccount(details) {
     const credential = await createUserWithEmailAndPassword(firebaseAuth, details.email, details.password);
     const uid = credential.user.uid;
     const username = fullNameFromParts(details.ownerFirstName, details.ownerLastName) || details.storeName;
-
-    await firebaseSetDoc(firebaseUserDoc(uid), {
+    const userRecord = {
         email: details.email,
         username,
         role: 'merchant',
         status: 'pending',
         createdAt: firebaseServerTimestamp()
-    });
-
-    // TODO: Upload merchant logos/documents with Firebase Storage in a later phase.
-    await firebaseSetDoc(firebaseRoleDoc('seller', uid), {
+    };
+    const merchantRecord = {
+        ownerFirstName: details.ownerFirstName,
+        ownerLastName: details.ownerLastName,
+        ownerEmail: details.email,
+        phone: details.phone,
         storeName: details.storeName,
         merchantType: details.merchantType,
         address: details.address,
+        businessHours: details.businessHours,
         approvalStatus: 'pending',
         storeStatus: 'closed',
         availableDays: 'Monday, Tuesday, Wednesday, Thursday, Friday, Saturday',
         logoUrl: '',
         documentUrl: '',
+        role: 'merchant',
         createdAt: firebaseServerTimestamp()
-    });
+    };
 
-    return syncCurrentAccountFromFirebase(credential.user);
+    await firebaseSetDoc(firebaseUserDoc(uid), userRecord);
+
+    // TODO: Upload merchant logos/documents with Firebase Storage in a later phase.
+    await firebaseSetDoc(firebaseRoleDoc('seller', uid), merchantRecord);
+
+    return buildAccountFromFirebaseRecords(uid, details.email, userRecord, merchantRecord);
 }
 
 async function createRiderFirebaseAccount(details) {
     const credential = await createUserWithEmailAndPassword(firebaseAuth, details.email, details.password);
     const uid = credential.user.uid;
     const fullName = fullNameFromParts(details.firstName, details.lastName);
-
-    await firebaseSetDoc(firebaseUserDoc(uid), {
+    const userRecord = {
         email: details.email,
         username: fullName,
         role: 'rider',
         status: 'pending',
         createdAt: firebaseServerTimestamp()
-    });
-
-    // TODO: Upload rider profile, valid ID, and license files with Firebase Storage in a later phase.
-    await firebaseSetDoc(firebaseRoleDoc('rider', uid), {
+    };
+    const riderRecord = {
+        firstName: details.firstName,
+        lastName: details.lastName,
         fullName,
+        email: details.email,
+        phone: details.phone,
         vehicleType: details.vehicleType,
         currentLocation: details.currentLocation,
         approvalStatus: 'pending',
+        availabilityStatus: 'Unavailable',
         profileImageUrl: '',
         validIdUrl: '',
         licenseUrl: '',
+        role: 'rider',
         createdAt: firebaseServerTimestamp()
-    });
+    };
 
-    return syncCurrentAccountFromFirebase(credential.user);
+    await firebaseSetDoc(firebaseUserDoc(uid), userRecord);
+
+    // TODO: Upload rider profile, valid ID, and license files with Firebase Storage in a later phase.
+    await firebaseSetDoc(firebaseRoleDoc('rider', uid), riderRecord);
+
+    return buildAccountFromFirebaseRecords(uid, details.email, userRecord, riderRecord);
+}
+
+async function finishPartnerApplicationSubmission(form, notice) {
+    await signOut(firebaseAuth).catch(() => {});
+    clearCurrentAccount();
+    renderAuthChrome(null);
+    form?.reset();
+    setNotice(notice, partnerApplicationSubmittedMessage);
+    if (!openSignInModalWithNotice(partnerApplicationSubmittedMessage)) {
+        location.href = signInModalUrl('application-submitted');
+    }
 }
 
 async function requestPasswordReset(action, payload = {}) {
@@ -7564,7 +7826,7 @@ function initRiderApplication() {
 
     const account = getCurrentAccount();
     if ($('[data-rider-application-page]') && accountRole(account) === 'rider') {
-        redirectToWaiting('rider', accountLinkedId(account));
+        location.href = dashboardForAccount(account);
         return;
     }
 
@@ -7589,7 +7851,7 @@ function initRiderApplication() {
                 const riderAddress = readAddressPickerField(form, {
                     label: currentAddressLabel
                 });
-                const account = await createRiderFirebaseAccount({
+                await createRiderFirebaseAccount({
                     firstName,
                     lastName,
                     email,
@@ -7599,9 +7861,7 @@ function initRiderApplication() {
                     currentLocation: riderAddress.address
                 });
 
-                saveRoleStorageForAccount(account);
-                setNotice(notice, pendingApprovalMessage);
-                setTimeout(() => redirectToWaiting('rider', accountLinkedId(account)), 500);
+                await finishPartnerApplicationSubmission(form, notice);
             } catch (error) {
                 setNotice(notice, firebaseAuthMessage(error) || 'Rider application could not be saved.', true);
             }
@@ -8388,7 +8648,7 @@ function initRiderDashboard() {
             );
             const status = shopper.SHOP_employmentStatus;
             if (status !== 'Active') {
-                redirectToWaiting('rider', shopperId);
+                redirectToPendingSignIn();
                 return;
             }
 
@@ -8657,7 +8917,7 @@ function initSellerRegistration() {
 
     const account = getCurrentAccount();
     if ($('[data-seller-registration-page]') && accountRole(account) === 'seller') {
-        redirectToWaiting('seller', accountLinkedId(account));
+        location.href = dashboardForAccount(account);
         return;
     }
 
@@ -8684,7 +8944,7 @@ function initSellerRegistration() {
                     label: currentAddressLabel
                 });
                 const businessHours = businessHoursValue(form);
-                const account = await createMerchantFirebaseAccount({
+                await createMerchantFirebaseAccount({
                     ownerFirstName,
                     ownerLastName,
                     email,
@@ -8696,9 +8956,7 @@ function initSellerRegistration() {
                     businessHours
                 });
 
-                saveRoleStorageForAccount(account);
-                setNotice(notice, pendingApprovalMessage);
-                setTimeout(() => redirectToWaiting('seller', accountLinkedId(account)), 500);
+                await finishPartnerApplicationSubmission(form, notice);
             } catch (error) {
                 setNotice(notice, firebaseAuthMessage(error) || 'Merchant registration could not be saved.', true);
             }
@@ -9117,7 +9375,7 @@ function initSellerDashboard() {
             merchantType = merchant.MERCH_type || 'Grocery';
             const status = merchant.MERCH_approvalStatus;
             if (status !== 'Approved') {
-                redirectToWaiting('seller', merchantId);
+                redirectToPendingSignIn();
                 return;
             }
 
@@ -10130,8 +10388,8 @@ function initAdminDashboard() {
     }
 
     const account = getCurrentAccount();
-    if (accountRole(account) !== 'admin' || account?.USER_status !== 'Active' || accountEmail(account) !== adminAccount.USER_email) {
-        location.href = 'index.html?modal=signin';
+    if (!isCurrentAdminAccount(account)) {
+        enforceProtectedPageAccess({ replace: true });
         return;
     }
 
@@ -10169,6 +10427,7 @@ function initAdminDashboard() {
         issues: 'Ratings/Refunds',
         orders: 'Order Logs'
     };
+    const customerProfileRepairIds = new Set();
 
     function playAdminSidebarSlide() {
         [viewHeading, viewList].forEach((node) => {
@@ -10191,11 +10450,30 @@ function initAdminDashboard() {
         adminState.customers = combined.customers;
         adminState.sellers = combined.sellers;
         adminState.riders = combined.riders;
+
+        adminState.users
+            .filter((user) => adminUserRecordRole(user) === 'customer')
+            .forEach((user) => {
+                const customer = adminState.customerProfiles.find((record) => record.id === user.id) || {};
+                if (!customerProfileNeedsAdminRepair(customer, user) || customerProfileRepairIds.has(user.id)) {
+                    return;
+                }
+
+                customerProfileRepairIds.add(user.id);
+                firebaseSetDoc(
+                    firebaseRoleDoc('customer', user.id),
+                    adminCustomerProfileRepairPayload(user.id, user, customer),
+                    { merge: true }
+                ).catch((error) => {
+                    customerProfileRepairIds.delete(user.id);
+                    console.error('Customer profile repair failed', error);
+                });
+            });
     }
 
     function accountRecords(type) {
         if (type === 'customers') {
-            return adminState.customers.filter((record) => roleLower(record.USER_role) === 'customer' && !isDeletedAccountRecord(record));
+            return adminState.customers.filter((record) => normalizedAccountRole(record.USER_role || record.role) === 'customer' && !isDeletedAccountRecord(record));
         }
 
         if (type === 'riders') {
@@ -10797,6 +11075,30 @@ function initAuthChrome() {
     }
 }
 
+function syncAuthStateAfterHistoryRestore({ replace = false } = {}) {
+    const account = getCurrentAccount();
+    renderAuthChrome(account);
+    enforceProtectedPageAccess({ replace });
+}
+
+function initBackForwardAuthGuard() {
+    if (document.documentElement.dataset.historyAuthGuardBound === 'true') {
+        return;
+    }
+
+    document.documentElement.dataset.historyAuthGuardBound = 'true';
+
+    window.addEventListener('pageshow', (event) => {
+        syncAuthStateAfterHistoryRestore({ replace: Boolean(event.persisted) });
+    });
+
+    window.addEventListener('storage', (event) => {
+        if (event.key === storageKeys.account) {
+            syncAuthStateAfterHistoryRestore({ replace: true });
+        }
+    });
+}
+
 function closeMoreMenu() {
     const moreMenu = $('[data-more-menu]');
     const moreToggle = $('[data-more-toggle]');
@@ -10857,6 +11159,12 @@ function initAccountModals() {
     const modalName = params.get('modal') || params.get('auth');
     if (modalName) {
         openAccountModal(modalName);
+        if (normalizeAccountModalName(modalName) === 'signin') {
+            const noticeMessage = signInNoticeMessage(params.get('notice'));
+            if (noticeMessage) {
+                setSignInNotice(noticeMessage, params.get('notice') === 'pending-approval');
+            }
+        }
     }
 }
 
@@ -11129,6 +11437,12 @@ async function applyAccountSettings(role, section) {
             phone,
             city,
             address,
+            role: 'customer',
+            status: 'active',
+            username: fullName,
+            USER_role: 'customer',
+            USER_email: email,
+            USER_status: 'Active',
             updatedAt: serverTimestamp()
         }, { merge: true });
         const nextAccount = {
@@ -11668,6 +11982,12 @@ async function persistCustomerDefaultAddress(address, account = getCurrentAccoun
         CUST_city: city || null,
         address: addressText,
         city,
+        email: currentEmail,
+        role: 'customer',
+        status: 'active',
+        USER_role: 'customer',
+        USER_email: currentEmail,
+        USER_status: 'Active',
         updatedAt: serverTimestamp()
     }, { merge: true });
 
@@ -12099,7 +12419,7 @@ async function confirmLogout() {
     closeLogoutConfirmModal({ restoreFocus: false });
     await signOut(firebaseAuth).catch(() => {});
     clearCurrentAccount();
-    location.href = 'index.html';
+    location.replace('index.html');
 }
 
 function initLogout() {
@@ -12457,6 +12777,7 @@ const appInitializers = [
     ['initCustomerProfileModal', initCustomerProfileModal],
     ['initCustomerAddressManagers', initCustomerAddressManagers],
     ['initAuthChrome', initAuthChrome],
+    ['initBackForwardAuthGuard', initBackForwardAuthGuard],
     ['initStorefront', initStorefront],
     ['initPasswordReset', initPasswordReset],
     ['initLoginPage', initLoginPage],
